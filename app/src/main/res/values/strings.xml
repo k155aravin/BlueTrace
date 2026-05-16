@@ -1,0 +1,36 @@
+<resources>
+    <string name="app_name">BlueTrace</string>
+    <string name="unknown_device">Unknown device</string>
+    <string name="cheap_ble_tracker">Cheap BLE tracker</string>
+    <string name="tile_tracker">Tile tracker</string>
+    <string name="airpods_earbuds">AirPods / earbuds</string>
+    <string name="samsung_smarttag">Samsung SmartTag</string>
+    <string name="apple_airtag">Apple AirTag</string>
+    <string name="fitbit_wearable">Fitbit / wearable</string>
+    <string name="unknown_ble_device">Unknown BLE device</string>
+    <string name="ready_status">Ready — tap Scan to start</string>
+    <string name="permissions_denied">Permissions denied — enable in Settings</string>
+    <string name="unknown">Unknown</string>
+    <string name="apple">Apple</string>
+    <string name="microsoft">Microsoft</string>
+    <string name="samsung">Samsung</string>
+    <string name="tile_mfr">Tile</string>
+    <string name="location_format">Location %1$d</string>
+    <string name="bluetooth_not_available">Bluetooth not available</string>
+    <string name="scanning_at">Scanning at %1$s&#8230;</string>
+    <string name="suspicious_devices_found">⚠ %1$d suspicious device(s) found!</string>
+    <string name="scan_complete">Scan complete — %1$d devices found</string>
+    <string name="scanning_dot">● scanning</string>
+    <string name="ready_dot">● ready</string>
+    <string name="location_placeholder">Location name (e.g. coffee shop)</string>
+    <string name="stop_scanning">Stop scanning</string>
+    <string name="scan_this_location">Scan this location</string>
+    <string name="devices_label">Devices</string>
+    <string name="suspicious_label">Suspicious</string>
+    <string name="score_format">%1$d%%</string>
+    <string name="locations_count">%1$d locations</string>
+    <string name="heartbeat_format">♥ %1$.0fms</string>
+    <string name="distance_format">~%1$.1fm away</string>
+    <string name="signals_count">%1$d signals</string>
+    <string name="suspicious_warning">⚠ Seen at %1$d location(s) — confidence %2$d%%</string>
+</resources>
