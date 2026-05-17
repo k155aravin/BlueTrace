@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.pow
 
 private const val MAX_TIMESTAMPS_PER_DEVICE = 80
@@ -42,6 +44,11 @@ private const val UI_REFRESH_MS = 1000L
 private const val SCAN_DURATION_MS = 30000L
 private const val TOTAL_LOCATIONS = 3
 private const val SWEEP_WINDOW_MS = 15 * 60 * 1000L
+private const val SCREEN_SCAN = "scan"
+private const val SCREEN_TRUSTED = "trusted"
+private const val MODE_SWEEP = "sweep"
+private const val MODE_TRUST = "trust"
+private const val MODE_BASELINE = "baseline"
 
 data class BleDevice(
     val mac: String,
@@ -55,6 +62,8 @@ data class BleDevice(
     val scanCount: Int,
     val locationsMatched: Int,
     val locations: Set<String>,
+    val trusted: Boolean,
+    val baselineMatch: Boolean,
 )
 
 data class SweepLocation(
@@ -106,6 +115,24 @@ fun BleDevice.isConfirmedFollow(): Boolean = locationsMatched >= TOTAL_LOCATIONS
 
 fun BleDevice.isWatchMatch(): Boolean = locationsMatched == 2
 
+fun BleDevice.isAlertMatch(): Boolean = !trusted && !baselineMatch && isConfirmedFollow()
+
+fun BleDevice.isWatchAlert(): Boolean = !trusted && !baselineMatch && isWatchMatch()
+
+fun BleDevice.matchesBaseline(baseline: List<BaselineDevice>): Boolean {
+    val heartbeat = heartbeatMs()
+    return baseline.any { reference ->
+        if (reference.mac == mac) return@any true
+        val sameKind = reference.manufacturer != "Unknown" &&
+            reference.manufacturer == manufacturer &&
+            reference.deviceType == deviceType()
+        val closeHeartbeat = heartbeat != null &&
+            reference.heartbeatMs != null &&
+            kotlin.math.abs(reference.heartbeatMs - heartbeat) <= 120.0
+        sameKind && closeHeartbeat
+    }
+}
+
 fun BleDevice.deviceType(): String {
     val hb = heartbeatMs()?.toInt() ?: return "Unknown device"
     return when (hb) {
@@ -141,7 +168,7 @@ private data class MutableBleDevice(
     var scanCount: Int = 0,
     val locations: MutableSet<String> = mutableSetOf(),
 ) {
-    fun snapshot(): BleDevice = BleDevice(
+    fun snapshot(trustedDevices: Set<String>): BleDevice = BleDevice(
         mac = mac,
         name = name,
         rssi = rssi,
@@ -153,20 +180,31 @@ private data class MutableBleDevice(
         scanCount = scanCount,
         locationsMatched = locations.size.coerceAtLeast(1),
         locations = locations.toSet(),
+        trusted = mac in trustedDevices,
+        baselineMatch = false,
     )
 }
 
 class MainActivity : ComponentActivity() {
     private val rawDevices = mutableMapOf<String, MutableBleDevice>()
     private val visibleDevices = mutableStateListOf<BleDevice>()
+    private val trustScanRawDevices = mutableMapOf<String, MutableBleDevice>()
+    private val trustScanDevices = mutableStateListOf<BleDevice>()
+    private val trustedDevices = mutableStateListOf<TrustedDevice>()
+    private val baselineRawDevices = mutableMapOf<String, MutableBleDevice>()
+    private val baselineDevices = mutableStateListOf<BaselineDevice>()
     private val totalDeviceCount = mutableStateOf(0)
+    private val activeScreen = mutableStateOf(SCREEN_SCAN)
     private val isScanning = mutableStateOf(false)
+    private val isTrustScanning = mutableStateOf(false)
+    private val isBaselineScanning = mutableStateOf(false)
     private val statusText = mutableStateOf("Ready - start your sweep")
     private val locationName = mutableStateOf("")
     private val handler = Handler(Looper.getMainLooper())
     private var scanCount = 0
     private var currentScanLocation = "Location 1"
     private var lastUiRefreshAt = 0L
+    private var pendingScanMode = MODE_SWEEP
     private val currentLocationDevices = mutableSetOf<String>()
 
     // 3-location sweep state
@@ -177,8 +215,15 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        if (permissions.values.all { it }) startBleScan()
-        else statusText.value = "Permissions denied - enable Bluetooth and Location in Settings"
+        if (permissions.values.all { it }) {
+            when (pendingScanMode) {
+                MODE_TRUST -> startTrustScan()
+                MODE_BASELINE -> startBaselineScan()
+                else -> startBleScan()
+            }
+        } else {
+            statusText.value = "Permissions denied - enable Bluetooth and Location in Settings"
+        }
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -196,23 +241,207 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val trustScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            recordTrustScanResult(result)
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach { recordTrustScanResult(it) }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            handler.post { isTrustScanning.value = false }
+        }
+    }
+
+    private val baselineScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            recordBaselineScanResult(result)
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach { recordBaselineScanResult(it) }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            handler.post { isBaselineScanning.value = false }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        loadTrustedDevices()
+        loadBaselineDevices()
         setContent {
             BlueTraceApp(
                 devices = visibleDevices,
                 isScanning = isScanning.value,
+                isTrustScanning = isTrustScanning.value,
+                isBaselineScanning = isBaselineScanning.value,
                 statusText = statusText.value,
                 locationName = locationName.value,
                 totalDeviceCount = totalDeviceCount.value,
                 currentStep = currentStep.value,
                 sweepLocations = sweepLocations,
                 sessionStart = sessionStart.value,
+                trustedDevices = trustedDevices,
+                baselineDevices = baselineDevices,
+                trustScanDevices = trustScanDevices,
+                activeScreen = activeScreen.value,
                 onLocationChange = { locationName.value = it },
                 onScanToggle = { if (isScanning.value) stopBleScan() else checkAndScan() },
-                onReset = { resetSweep() }
+                onReset = { resetSweep() },
+                onTrustDevice = { trustDevice(it) },
+                onTrustScanToggle = { if (isTrustScanning.value) stopTrustScan() else checkAndTrustScan() },
+                onBaselineScanToggle = { if (isBaselineScanning.value) stopBaselineScan(saveResults = true) else checkAndBaselineScan() },
+                onScreenChange = { activeScreen.value = it },
+                onTrustedEnabledChange = { mac, enabled -> setTrustedEnabled(mac, enabled) },
+                onClearTrusted = { clearTrustedDevices() },
+                onClearBaseline = { clearBaselineDevices() },
             )
         }
+    }
+
+    private fun loadTrustedDevices() {
+        val saved = getPreferences(Context.MODE_PRIVATE)
+            .getString("trusted_devices_json", "[]")
+            .orEmpty()
+        trustedDevices.clear()
+        try {
+            val array = JSONArray(saved)
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                trustedDevices.add(
+                    TrustedDevice(
+                        mac = item.getString("mac"),
+                        name = item.optString("name", "Trusted device"),
+                        deviceType = item.optString("deviceType", "Unknown device"),
+                        addedAt = item.optLong("addedAt", System.currentTimeMillis()),
+                        enabled = item.optBoolean("enabled", true),
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            // Legacy fallback from the first whitelist version.
+            val legacy = getPreferences(Context.MODE_PRIVATE)
+                .getStringSet("trusted_devices", emptySet())
+                .orEmpty()
+            trustedDevices.addAll(
+                legacy.map {
+                    TrustedDevice(
+                        mac = it,
+                        name = "Trusted device",
+                        deviceType = "Unknown device",
+                        addedAt = System.currentTimeMillis(),
+                        enabled = true,
+                    )
+                }
+            )
+            saveTrustedDevices()
+        }
+    }
+
+    private fun saveTrustedDevices() {
+        val array = JSONArray()
+        trustedDevices.forEach {
+            array.put(
+                JSONObject()
+                    .put("mac", it.mac)
+                    .put("name", it.name)
+                    .put("deviceType", it.deviceType)
+                    .put("addedAt", it.addedAt)
+                    .put("enabled", it.enabled)
+            )
+        }
+        getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putString("trusted_devices_json", array.toString())
+            .apply()
+    }
+
+    private fun loadBaselineDevices() {
+        val saved = getPreferences(Context.MODE_PRIVATE)
+            .getString("baseline_devices_json", "[]")
+            .orEmpty()
+        baselineDevices.clear()
+        try {
+            val array = JSONArray(saved)
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                baselineDevices.add(
+                    BaselineDevice(
+                        mac = item.getString("mac"),
+                        name = item.optString("name", "Reference device"),
+                        manufacturer = item.optString("manufacturer", "Unknown"),
+                        deviceType = item.optString("deviceType", "Unknown device"),
+                        heartbeatMs = if (item.isNull("heartbeatMs")) null else item.optDouble("heartbeatMs"),
+                        addedAt = item.optLong("addedAt", System.currentTimeMillis()),
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            baselineDevices.clear()
+            saveBaselineDevices()
+        }
+    }
+
+    private fun saveBaselineDevices() {
+        val array = JSONArray()
+        baselineDevices.forEach {
+            array.put(
+                JSONObject()
+                    .put("mac", it.mac)
+                    .put("name", it.name)
+                    .put("manufacturer", it.manufacturer)
+                    .put("deviceType", it.deviceType)
+                    .put("heartbeatMs", it.heartbeatMs ?: JSONObject.NULL)
+                    .put("addedAt", it.addedAt)
+            )
+        }
+        getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putString("baseline_devices_json", array.toString())
+            .apply()
+    }
+
+    private fun clearBaselineDevices() {
+        baselineDevices.clear()
+        synchronized(baselineRawDevices) { baselineRawDevices.clear() }
+        saveBaselineDevices()
+        refreshVisibleDevices()
+    }
+
+    private fun trustDevice(device: BleDevice) {
+        val existingIndex = trustedDevices.indexOfFirst { it.mac == device.mac }
+        val trusted = TrustedDevice(
+            mac = device.mac,
+            name = device.name,
+            deviceType = device.deviceType(),
+            addedAt = System.currentTimeMillis(),
+            enabled = true,
+        )
+        if (existingIndex >= 0) trustedDevices[existingIndex] = trusted
+        else trustedDevices.add(trusted)
+        saveTrustedDevices()
+        synchronized(rawDevices) { rawDevices.remove(device.mac) }
+        synchronized(trustScanRawDevices) { trustScanRawDevices.remove(device.mac) }
+        refreshVisibleDevices()
+        refreshTrustScanDevices()
+    }
+
+    private fun setTrustedEnabled(mac: String, enabled: Boolean) {
+        val index = trustedDevices.indexOfFirst { it.mac == mac }
+        if (index < 0) return
+        trustedDevices[index] = trustedDevices[index].copy(enabled = enabled)
+        saveTrustedDevices()
+        refreshVisibleDevices()
+    }
+
+    private fun clearTrustedDevices() {
+        trustedDevices.clear()
+        saveTrustedDevices()
+        refreshVisibleDevices()
     }
 
     private fun resetSweep() {
@@ -237,7 +466,40 @@ class MainActivity : ComponentActivity() {
         val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-        if (allGranted) startBleScan() else permissionLauncher.launch(permissions)
+        if (allGranted) startBleScan() else {
+            pendingScanMode = MODE_SWEEP
+            permissionLauncher.launch(permissions)
+        }
+    }
+
+    private fun checkAndTrustScan() {
+        val permissions = arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        val allGranted = permissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (allGranted) startTrustScan() else {
+            pendingScanMode = MODE_TRUST
+            permissionLauncher.launch(permissions)
+        }
+    }
+
+    private fun checkAndBaselineScan() {
+        val permissions = arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        val allGranted = permissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (allGranted) startBaselineScan() else {
+            pendingScanMode = MODE_BASELINE
+            permissionLauncher.launch(permissions)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -264,6 +526,35 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
+    private fun startTrustScan() {
+        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val scanner = btManager.adapter?.bluetoothLeScanner ?: return
+        synchronized(trustScanRawDevices) { trustScanRawDevices.clear() }
+        trustScanDevices.clear()
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setReportDelay(0L)
+            .build()
+        scanner.startScan(null, settings, trustScanCallback)
+        isTrustScanning.value = true
+        handler.postDelayed({ stopTrustScan() }, 15000L)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBaselineScan() {
+        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val scanner = btManager.adapter?.bluetoothLeScanner ?: return
+        synchronized(baselineRawDevices) { baselineRawDevices.clear() }
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+            .setReportDelay(500L)
+            .build()
+        scanner.startScan(null, settings, baselineScanCallback)
+        isBaselineScanning.value = true
+        handler.postDelayed({ stopBaselineScan(saveResults = true) }, 30000L)
+    }
+
+    @SuppressLint("MissingPermission")
     private fun stopBleScan() {
         if (!isScanning.value) return
 
@@ -287,7 +578,7 @@ class MainActivity : ComponentActivity() {
         locationName.value = ""
 
         if (currentStep.value >= TOTAL_LOCATIONS) {
-            val confirmedMatches = visibleDevices.count { it.isConfirmedFollow() }
+            val confirmedMatches = visibleDevices.count { it.isAlertMatch() }
             val overWindow = sessionStart.value > 0L &&
                 System.currentTimeMillis() - sessionStart.value > SWEEP_WINDOW_MS
             statusText.value = if (confirmedMatches > 0 && overWindow)
@@ -302,9 +593,32 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
+    private fun stopTrustScan() {
+        if (!isTrustScanning.value) return
+        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        try {
+            btManager.adapter?.bluetoothLeScanner?.stopScan(trustScanCallback)
+        } catch (_: Exception) {}
+        isTrustScanning.value = false
+        refreshTrustScanDevices()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopBaselineScan(saveResults: Boolean) {
+        if (!isBaselineScanning.value) return
+        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        try {
+            btManager.adapter?.bluetoothLeScanner?.stopScan(baselineScanCallback)
+        } catch (_: Exception) {}
+        isBaselineScanning.value = false
+        if (saveResults) saveBaselineFromScan()
+    }
+
+    @SuppressLint("MissingPermission")
     private fun recordScanResult(result: ScanResult) {
         val now = System.currentTimeMillis()
         val mac = try { result.device.address ?: return } catch (_: Exception) { return }
+        if (trustedDevices.any { it.enabled && it.mac == mac }) return
         val name = try { result.device.name ?: "Unknown device" } catch (_: Exception) { "Unknown device" }
         val rssi = result.rssi
         val txPower = result.txPower.takeIf { it != Int.MIN_VALUE }
@@ -333,6 +647,98 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun recordTrustScanResult(result: ScanResult) {
+        val now = System.currentTimeMillis()
+        val mac = try { result.device.address ?: return } catch (_: Exception) { return }
+        if (trustedDevices.any { it.enabled && it.mac == mac }) return
+        val name = try { result.device.name ?: "Unknown device" } catch (_: Exception) { "Unknown device" }
+        val rssi = result.rssi
+        val txPower = result.txPower.takeIf { it != Int.MIN_VALUE }
+        val manufacturer = manufacturerName(result)
+
+        synchronized(trustScanRawDevices) {
+            val device = trustScanRawDevices.getOrPut(mac) {
+                MutableBleDevice(
+                    mac = mac,
+                    name = name,
+                    rssi = rssi,
+                    txPower = txPower,
+                    manufacturer = manufacturer,
+                    firstSeen = now,
+                    lastSeen = now
+                )
+            }
+            device.name = if (name == "Unknown device") device.name else name
+            device.rssi = rssi
+            device.txPower = txPower ?: device.txPower
+            device.manufacturer = if (manufacturer == "Unknown") device.manufacturer else manufacturer
+            device.lastSeen = now
+            device.scanCount += 1
+            device.locations.add("Trust setup")
+            device.timestamps.addLast(now)
+            while (device.timestamps.size > MAX_TIMESTAMPS_PER_DEVICE) device.timestamps.removeFirst()
+        }
+
+        handler.post { refreshTrustScanDevices() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun recordBaselineScanResult(result: ScanResult) {
+        val now = System.currentTimeMillis()
+        val mac = try { result.device.address ?: return } catch (_: Exception) { return }
+        val name = try { result.device.name ?: "Unknown device" } catch (_: Exception) { "Unknown device" }
+        val rssi = result.rssi
+        val txPower = result.txPower.takeIf { it != Int.MIN_VALUE }
+        val manufacturer = manufacturerName(result)
+
+        synchronized(baselineRawDevices) {
+            val device = baselineRawDevices.getOrPut(mac) {
+                MutableBleDevice(
+                    mac = mac,
+                    name = name,
+                    rssi = rssi,
+                    txPower = txPower,
+                    manufacturer = manufacturer,
+                    firstSeen = now,
+                    lastSeen = now
+                )
+            }
+            device.name = if (name == "Unknown device") device.name else name
+            device.rssi = rssi
+            device.txPower = txPower ?: device.txPower
+            device.manufacturer = if (manufacturer == "Unknown") device.manufacturer else manufacturer
+            device.lastSeen = now
+            device.scanCount += 1
+            device.locations.add("Baseline")
+            device.timestamps.addLast(now)
+            while (device.timestamps.size > MAX_TIMESTAMPS_PER_DEVICE) device.timestamps.removeFirst()
+        }
+    }
+
+    private fun saveBaselineFromScan() {
+        val trusted = trustedDevices.filter { it.enabled }.map { it.mac }.toSet()
+        val baseline = synchronized(baselineRawDevices) {
+            baselineRawDevices.values
+                .filter { it.mac !in trusted }
+                .map { it.snapshot(trusted) }
+                .map {
+                    BaselineDevice(
+                        mac = it.mac,
+                        name = it.name,
+                        manufacturer = it.manufacturer,
+                        deviceType = it.deviceType(),
+                        heartbeatMs = it.heartbeatMs(),
+                        addedAt = System.currentTimeMillis(),
+                    )
+                }
+        }
+        baselineDevices.clear()
+        baselineDevices.addAll(baseline)
+        saveBaselineDevices()
+        refreshVisibleDevices()
+    }
+
     private fun manufacturerName(result: ScanResult): String {
         val mfrMap = result.scanRecord?.manufacturerSpecificData ?: return "Unknown"
         return when {
@@ -346,9 +752,13 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshVisibleDevices() {
         val snapshot = synchronized(rawDevices) {
+            val trusted = trustedDevices.filter { it.enabled }.map { it.mac }.toSet()
             rawDevices.values
-                .map { it.snapshot() }
-                .sortedWith(compareByDescending<BleDevice> { it.locationsMatched }
+                .map { it.snapshot(trusted) }
+                .map { it.copy(baselineMatch = it.matchesBaseline(baselineDevices)) }
+                .sortedWith(compareBy<BleDevice> { it.trusted }
+                    .thenBy { it.baselineMatch }
+                    .thenByDescending { it.locationsMatched }
                     .thenByDescending { it.confidenceScore() }
                     .thenByDescending { it.scanCount }
                     .thenBy { it.mac })
@@ -358,6 +768,19 @@ class MainActivity : ComponentActivity() {
         visibleDevices.clear()
         visibleDevices.addAll(snapshot)
     }
+
+    private fun refreshTrustScanDevices() {
+        val snapshot = synchronized(trustScanRawDevices) {
+            val trusted = trustedDevices.filter { it.enabled }.map { it.mac }.toSet()
+            trustScanRawDevices.values
+                .map { it.snapshot(trusted) }
+                .sortedWith(compareByDescending<BleDevice> { it.scanCount }
+                    .thenBy { it.mac })
+                .take(20)
+        }
+        trustScanDevices.clear()
+        trustScanDevices.addAll(snapshot)
+    }
 }
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
@@ -366,21 +789,60 @@ class MainActivity : ComponentActivity() {
 fun BlueTraceApp(
     devices: List<BleDevice>,
     isScanning: Boolean,
+    isTrustScanning: Boolean,
+    isBaselineScanning: Boolean,
     statusText: String,
     locationName: String,
     totalDeviceCount: Int,
     currentStep: Int,
     sweepLocations: List<SweepLocation>,
     sessionStart: Long,
+    trustedDevices: List<TrustedDevice>,
+    baselineDevices: List<BaselineDevice>,
+    trustScanDevices: List<BleDevice>,
+    activeScreen: String,
     onLocationChange: (String) -> Unit,
     onScanToggle: () -> Unit,
     onReset: () -> Unit,
+    onTrustDevice: (BleDevice) -> Unit,
+    onTrustScanToggle: () -> Unit,
+    onBaselineScanToggle: () -> Unit,
+    onScreenChange: (String) -> Unit,
+    onTrustedEnabledChange: (String, Boolean) -> Unit,
+    onClearTrusted: () -> Unit,
+    onClearBaseline: () -> Unit,
 ) {
     val sweepComplete = currentStep >= TOTAL_LOCATIONS
-    val confirmedMatches = devices.filter { it.isConfirmedFollow() }
-    val watchMatches = devices.filter { it.isWatchMatch() }
+    val confirmedMatches = devices.filter { it.isAlertMatch() }
+    val watchMatches = devices.filter { it.isWatchAlert() }
     val sweepElapsed = rememberSweepElapsed(sessionStart, sweepComplete)
     val sweepOverWindow = sessionStart > 0L && sweepElapsed > SWEEP_WINDOW_MS
+
+    if (activeScreen == SCREEN_TRUSTED) {
+        Column(modifier = Modifier.fillMaxSize().background(DarkBg)) {
+            TrustedDevicesScreen(
+                trustedDevices = trustedDevices,
+                baselineDevices = baselineDevices,
+                trustScanDevices = trustScanDevices,
+                isTrustScanning = isTrustScanning,
+                isBaselineScanning = isBaselineScanning,
+                onBack = { onScreenChange(SCREEN_SCAN) },
+                onTrustScanToggle = onTrustScanToggle,
+                onBaselineScanToggle = onBaselineScanToggle,
+                onTrustDevice = onTrustDevice,
+                onEnabledChange = onTrustedEnabledChange,
+                onClearAll = onClearTrusted,
+                onClearBaseline = onClearBaseline,
+                modifier = Modifier.weight(1f)
+            )
+            BottomTabs(
+                activeScreen = activeScreen,
+                onScreenChange = onScreenChange,
+                trustedCount = trustedDevices.count { it.enabled }
+            )
+        }
+        return
+    }
 
     Column(
         modifier = Modifier
@@ -509,7 +971,7 @@ fun BlueTraceApp(
             modifier = Modifier.weight(1f)
         ) {
             items(devices, key = { it.mac }) { device ->
-                DeviceCard(device)
+                DeviceCard(device, onTrustDevice = onTrustDevice)
             }
         }
 
@@ -523,6 +985,66 @@ fun BlueTraceApp(
         ) {
             Text("New sweep", color = TextMuted, fontSize = 14.sp)
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        BottomTabs(
+            activeScreen = activeScreen,
+            onScreenChange = onScreenChange,
+            trustedCount = trustedDevices.count { it.enabled }
+        )
+    }
+}
+
+@Composable
+fun BottomTabs(
+    activeScreen: String,
+    onScreenChange: (String) -> Unit,
+    trustedCount: Int,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DarkCard, RoundedCornerShape(14.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        TabButton(
+            label = "Scan",
+            active = activeScreen == SCREEN_SCAN,
+            modifier = Modifier.weight(1f),
+            onClick = { onScreenChange(SCREEN_SCAN) }
+        )
+        TabButton(
+            label = "Trusted ($trustedCount)",
+            active = activeScreen == SCREEN_TRUSTED,
+            modifier = Modifier.weight(1f),
+            onClick = { onScreenChange(SCREEN_TRUSTED) }
+        )
+    }
+}
+
+@Composable
+fun TabButton(
+    label: String,
+    active: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(42.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (active) Color(0xFF14532D) else Color.Transparent
+        ),
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp)
+    ) {
+        Text(
+            label,
+            color = if (active) GreenColor else TextMuted,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -685,11 +1207,13 @@ fun StatCard(label: String, value: String, modifier: Modifier, valueColor: Color
 }
 
 @Composable
-fun DeviceCard(device: BleDevice) {
+fun DeviceCard(device: BleDevice, onTrustDevice: (BleDevice) -> Unit) {
     val score = device.confidenceScore()
     val isConfirmed = device.isConfirmedFollow()
     val isWatch = device.isWatchMatch()
     val bgColor = when {
+        device.trusted -> Color(0xFF06140D)
+        device.baselineMatch -> Color(0xFF06111F)
         isConfirmed -> Color(0xFF1A0808)
         isWatch -> Color(0xFF171302)
         else -> DarkCard
@@ -702,7 +1226,9 @@ fun DeviceCard(device: BleDevice) {
             .fillMaxWidth()
             .background(bgColor, RoundedCornerShape(12.dp))
             .then(
-                if (isConfirmed) Modifier.border(1.dp, Color(0xFF7F1D1D), RoundedCornerShape(12.dp))
+                if (device.trusted) Modifier.border(1.dp, Color(0xFF14532D), RoundedCornerShape(12.dp))
+                else if (device.baselineMatch) Modifier.border(1.dp, Color(0xFF1E3A8A), RoundedCornerShape(12.dp))
+                else if (isConfirmed) Modifier.border(1.dp, Color(0xFF7F1D1D), RoundedCornerShape(12.dp))
                 else if (isWatch) Modifier.border(1.dp, Color(0xFF854D0E), RoundedCornerShape(12.dp))
                 else Modifier
             )
@@ -740,9 +1266,16 @@ fun DeviceCard(device: BleDevice) {
         Spacer(modifier = Modifier.height(6.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (device.trusted) Chip("Trusted", GreenColor)
+            if (device.baselineMatch) Chip("Baseline match", BlueColor)
             Chip(device.deviceType(), BlueColor)
             Chip(device.manufacturer, TextMuted)
-            if (device.locationsMatched >= 2) Chip("${device.locationsMatched} locations", RedColor)
+            if (device.locationsMatched >= 2) {
+                Chip(
+                    "${device.locationsMatched} locations",
+                    if (device.trusted) GreenColor else RedColor
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -752,12 +1285,25 @@ fun DeviceCard(device: BleDevice) {
             Text("${device.scanCount} signals", color = TextMuted, fontSize = 12.sp)
         }
 
-        if (isConfirmed || isWatch) {
+        if (!device.trusted && (isConfirmed || isWatch)) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 if (isConfirmed) "⚠ Alert: seen at all 3 locations - confidence $score%"
                 else "Watch: seen at 2 locations - keep scanning",
                 color = if (isConfirmed) Color(0xFFFCA5A5) else YellowColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        TextButton(
+            onClick = { onTrustDevice(device) },
+            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
+        ) {
+            Text(
+                "Trust this device",
+                color = GreenColor,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
