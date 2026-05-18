@@ -70,6 +70,7 @@ fun TrustedDevicesScreen(
     trustedDevices: List<TrustedDevice>,
     baselineDevices: List<BaselineDevice>,
     trustScanDevices: List<BleDevice>,
+    trustStatusText: String,
     isTrustScanning: Boolean,
     isBaselineScanning: Boolean,
     onBack: () -> Unit,
@@ -119,6 +120,10 @@ fun TrustedDevicesScreen(
         }
 
         item {
+            TrustSetupCard()
+        }
+
+        item {
             BaselineProfileCard(
                 baselineCount = baselineDevices.size,
                 isBaselineScanning = isBaselineScanning,
@@ -147,20 +152,27 @@ fun TrustedDevicesScreen(
             }
         }
 
+        item {
+            TrustScanSummaryCard(
+                isScanning = isTrustScanning,
+                hasRunScan = hasRunTrustScan.value,
+                candidateCount = candidates.size,
+                savedCount = trustedDevices.size,
+                statusText = trustStatusText
+            )
+        }
+
         if (candidates.isNotEmpty()) {
             item {
-                Text("Nearby devices (${candidates.size})", color = TrustedMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "Nearby devices (${candidates.size})",
+                    color = TrustedMuted,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
             items(candidates, key = { it.mac }) { device ->
                 TrustCandidateRow(device, onTrustDevice)
-            }
-        } else if (isTrustScanning) {
-            item {
-                TrustScanStatusCard("Scanning nearby Bluetooth devices...")
-            }
-        } else if (hasRunTrustScan.value) {
-            item {
-                TrustScanStatusCard("No new devices found. Try turning the device off/on or move closer.")
             }
         }
 
@@ -194,16 +206,79 @@ fun TrustedDevicesScreen(
 }
 
 @Composable
-private fun TrustScanStatusCard(text: String) {
-    Text(
-        text,
-        color = TrustedMuted,
-        fontSize = 12.sp,
+private fun TrustSetupCard() {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(TrustedDarkCard, RoundedCornerShape(12.dp))
-            .padding(14.dp)
-    )
+            .border(1.dp, TrustedDarkBorder, RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text("Best way to use this", color = TrustedGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text("Do this at home, in your car, or in a quiet place.", color = TrustedText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "Keep your headphones, watch, laptop, second phone, and team devices close. Scan, then tap Trust on anything you own.",
+            color = TrustedMuted,
+            fontSize = 12.sp,
+            lineHeight = 17.sp
+        )
+    }
+}
+
+@Composable
+private fun TrustScanSummaryCard(
+    isScanning: Boolean,
+    hasRunScan: Boolean,
+    candidateCount: Int,
+    savedCount: Int,
+    statusText: String,
+) {
+    val title = when {
+        statusText.isNotBlank() -> statusText
+        isScanning -> "Scanning nearby devices..."
+        hasRunScan && candidateCount > 0 -> "Scan complete - $candidateCount new ${deviceWord(candidateCount)} found"
+        hasRunScan -> "Scan complete - no new devices found"
+        else -> "Ready to scan trusted devices"
+    }
+    val body = when {
+        statusText.contains("Bluetooth", ignoreCase = true) -> "Turn Bluetooth on from your phone quick settings, then run the trust scan again."
+        statusText.startsWith("Trusted:", ignoreCase = true) -> "Saved. This device moved into your whitelist and will be ignored during security sweeps."
+        statusText.isNotBlank() -> "Follow the message above, then try the scan again."
+        isScanning -> "Keep your own device nearby. New candidates will appear below while the scan runs."
+        hasRunScan && candidateCount > 0 -> "Tap Trust beside your own devices. Trusted devices will be ignored during security sweeps."
+        hasRunScan -> "Try moving closer, waking the device, or turning Bluetooth off and on."
+        else -> "$savedCount trusted ${deviceWord(savedCount)} saved. Use the green button when you want to add more."
+    }
+    val border = when {
+        statusText.contains("Bluetooth", ignoreCase = true) -> TrustedRed
+        statusText.startsWith("Trusted:", ignoreCase = true) -> TrustedGreen
+        isScanning -> TrustedYellow
+        hasRunScan && candidateCount > 0 -> TrustedGreen
+        else -> TrustedDarkBorder
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(TrustedDarkCard, RoundedCornerShape(12.dp))
+            .border(1.dp, border.copy(alpha = .55f), RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            title,
+            color = when {
+                statusText.contains("Bluetooth", ignoreCase = true) -> TrustedRed
+                statusText.startsWith("Trusted:", ignoreCase = true) -> TrustedGreen
+                isScanning -> TrustedYellow
+                else -> TrustedText
+            },
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(body, color = TrustedMuted, fontSize = 12.sp, lineHeight = 17.sp)
+    }
 }
 
 @Composable
@@ -295,7 +370,7 @@ private fun TrustCandidateRow(device: BleDevice, onTrustDevice: (BleDevice) -> U
             shape = RoundedCornerShape(10.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
         ) {
-            Text("Add", color = TrustedGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("Trust", color = TrustedGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -453,3 +528,5 @@ private fun DangerZone(onClearAll: () -> Unit) {
 private fun formatTrustedDate(time: Long): String {
     return SimpleDateFormat("MMM d", Locale.US).format(Date(time))
 }
+
+private fun deviceWord(count: Int): String = if (count == 1) "device" else "devices"

@@ -199,6 +199,7 @@ class MainActivity : ComponentActivity() {
     private val isTrustScanning = mutableStateOf(false)
     private val isBaselineScanning = mutableStateOf(false)
     private val statusText = mutableStateOf("Ready - start your sweep")
+    private val trustStatusText = mutableStateOf("")
     private val locationName = mutableStateOf("")
     private val handler = Handler(Looper.getMainLooper())
     private var scanCount = 0
@@ -251,7 +252,10 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onScanFailed(errorCode: Int) {
-            handler.post { isTrustScanning.value = false }
+            handler.post {
+                isTrustScanning.value = false
+                trustStatusText.value = "Trust scan failed - turn Bluetooth on and try again"
+            }
         }
     }
 
@@ -265,7 +269,11 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onScanFailed(errorCode: Int) {
-            handler.post { isBaselineScanning.value = false }
+            handler.post {
+                isBaselineScanning.value = false
+                statusText.value = "Baseline scan failed - turn Bluetooth on and try again"
+                trustStatusText.value = "Baseline scan failed - turn Bluetooth on and try again"
+            }
         }
     }
 
@@ -288,6 +296,7 @@ class MainActivity : ComponentActivity() {
                 trustedDevices = trustedDevices,
                 baselineDevices = baselineDevices,
                 trustScanDevices = trustScanDevices,
+                trustStatusText = trustStatusText.value,
                 activeScreen = activeScreen.value,
                 onLocationChange = { locationName.value = it },
                 onScanToggle = { if (isScanning.value) stopBleScan() else checkAndScan() },
@@ -428,6 +437,8 @@ class MainActivity : ComponentActivity() {
         synchronized(trustScanRawDevices) { trustScanRawDevices.remove(device.mac) }
         refreshVisibleDevices()
         refreshTrustScanDevices()
+        val displayName = if (device.name == "Unknown device") device.deviceType() else device.name
+        trustStatusText.value = "Trusted: $displayName added"
     }
 
     private fun setTrustedEnabled(mac: String, enabled: Boolean) {
@@ -506,7 +517,15 @@ class MainActivity : ComponentActivity() {
     private fun startBleScan() {
         if (currentStep.value >= TOTAL_LOCATIONS) return
         val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val scanner = btManager.adapter?.bluetoothLeScanner ?: run {
+        val adapter = btManager.adapter ?: run {
+            statusText.value = "Bluetooth scanner not available"
+            return
+        }
+        if (!adapter.isEnabled) {
+            statusText.value = "Bluetooth is off - turn it on and scan again"
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner ?: run {
             statusText.value = "Bluetooth scanner not available"
             return
         }
@@ -528,9 +547,21 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun startTrustScan() {
         val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val scanner = btManager.adapter?.bluetoothLeScanner ?: return
+        val adapter = btManager.adapter ?: run {
+            trustStatusText.value = "Bluetooth scanner not available"
+            return
+        }
+        if (!adapter.isEnabled) {
+            trustStatusText.value = "Bluetooth is off"
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner ?: run {
+            trustStatusText.value = "Bluetooth scanner not available"
+            return
+        }
         synchronized(trustScanRawDevices) { trustScanRawDevices.clear() }
         trustScanDevices.clear()
+        trustStatusText.value = ""
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setReportDelay(0L)
@@ -543,7 +574,18 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun startBaselineScan() {
         val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val scanner = btManager.adapter?.bluetoothLeScanner ?: return
+        val adapter = btManager.adapter ?: run {
+            trustStatusText.value = "Bluetooth scanner not available"
+            return
+        }
+        if (!adapter.isEnabled) {
+            trustStatusText.value = "Bluetooth is off"
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner ?: run {
+            trustStatusText.value = "Bluetooth scanner not available"
+            return
+        }
         synchronized(baselineRawDevices) { baselineRawDevices.clear() }
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
@@ -601,6 +643,12 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {}
         isTrustScanning.value = false
         refreshTrustScanDevices()
+        val found = trustScanDevices.size
+        trustStatusText.value = if (found > 0) {
+            "Scan complete - $found new ${if (found == 1) "device" else "devices"} found"
+        } else {
+            "Scan complete - no new devices found"
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -754,6 +802,7 @@ class MainActivity : ComponentActivity() {
         val snapshot = synchronized(rawDevices) {
             val trusted = trustedDevices.filter { it.enabled }.map { it.mac }.toSet()
             rawDevices.values
+                .filter { it.mac !in trusted }
                 .map { it.snapshot(trusted) }
                 .map { it.copy(baselineMatch = it.matchesBaseline(baselineDevices)) }
                 .sortedWith(compareBy<BleDevice> { it.trusted }
@@ -800,6 +849,7 @@ fun BlueTraceApp(
     trustedDevices: List<TrustedDevice>,
     baselineDevices: List<BaselineDevice>,
     trustScanDevices: List<BleDevice>,
+    trustStatusText: String,
     activeScreen: String,
     onLocationChange: (String) -> Unit,
     onScanToggle: () -> Unit,
@@ -824,6 +874,7 @@ fun BlueTraceApp(
                 trustedDevices = trustedDevices,
                 baselineDevices = baselineDevices,
                 trustScanDevices = trustScanDevices,
+                trustStatusText = trustStatusText,
                 isTrustScanning = isTrustScanning,
                 isBaselineScanning = isBaselineScanning,
                 onBack = { onScreenChange(SCREEN_SCAN) },
@@ -971,7 +1022,7 @@ fun BlueTraceApp(
             modifier = Modifier.weight(1f)
         ) {
             items(devices, key = { it.mac }) { device ->
-                DeviceCard(device, onTrustDevice = onTrustDevice)
+                DeviceCard(device)
             }
         }
 
@@ -1207,7 +1258,7 @@ fun StatCard(label: String, value: String, modifier: Modifier, valueColor: Color
 }
 
 @Composable
-fun DeviceCard(device: BleDevice, onTrustDevice: (BleDevice) -> Unit) {
+fun DeviceCard(device: BleDevice) {
     val score = device.confidenceScore()
     val isConfirmed = device.isConfirmedFollow()
     val isWatch = device.isWatchMatch()
@@ -1296,18 +1347,6 @@ fun DeviceCard(device: BleDevice, onTrustDevice: (BleDevice) -> Unit) {
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-        TextButton(
-            onClick = { onTrustDevice(device) },
-            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
-        ) {
-            Text(
-                "Trust this device",
-                color = GreenColor,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
     }
 }
 
