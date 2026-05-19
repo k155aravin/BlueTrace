@@ -16,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,6 +47,7 @@ private const val TOTAL_LOCATIONS = 3
 private const val SWEEP_WINDOW_MS = 15 * 60 * 1000L
 private const val SCREEN_SCAN = "scan"
 private const val SCREEN_TRUSTED = "trusted"
+private const val SCREEN_LOCATION_DETAIL = "location_detail"
 private const val MODE_SWEEP = "sweep"
 private const val MODE_TRUST = "trust"
 private const val MODE_BASELINE = "baseline"
@@ -199,6 +201,7 @@ class MainActivity : ComponentActivity() {
     private val baselineDevices = mutableStateListOf<BaselineDevice>()
     private val totalDeviceCount = mutableStateOf(0)
     private val activeScreen = mutableStateOf(SCREEN_SCAN)
+    private val selectedLocationName = mutableStateOf<String?>(null)
     private val isScanning = mutableStateOf(false)
     private val isTrustScanning = mutableStateOf(false)
     private val isBaselineScanning = mutableStateOf(false)
@@ -304,6 +307,7 @@ class MainActivity : ComponentActivity() {
                 trustScanDevices = trustScanDevices,
                 trustStatusText = trustStatusText.value,
                 activeScreen = activeScreen.value,
+                selectedLocationName = selectedLocationName.value,
                 onMovementModeChange = { movementMode.value = it },
                 onLocationChange = { locationName.value = it },
                 onScanToggle = { if (isScanning.value) stopBleScan() else checkAndScan() },
@@ -312,6 +316,14 @@ class MainActivity : ComponentActivity() {
                 onTrustScanToggle = { if (isTrustScanning.value) stopTrustScan() else checkAndTrustScan() },
                 onBaselineScanToggle = { if (isBaselineScanning.value) stopBaselineScan(saveResults = true) else checkAndBaselineScan() },
                 onScreenChange = { activeScreen.value = it },
+                onLocationSelected = {
+                    selectedLocationName.value = it
+                    activeScreen.value = SCREEN_LOCATION_DETAIL
+                },
+                onBackToScan = {
+                    selectedLocationName.value = null
+                    activeScreen.value = SCREEN_SCAN
+                },
                 onTrustedEnabledChange = { mac, enabled -> setTrustedEnabled(mac, enabled) },
                 onClearTrusted = { clearTrustedDevices() },
                 onClearBaseline = { clearBaselineDevices() },
@@ -859,6 +871,7 @@ fun BlueTraceApp(
     trustScanDevices: List<BleDevice>,
     trustStatusText: String,
     activeScreen: String,
+    selectedLocationName: String?,
     onMovementModeChange: (String) -> Unit,
     onLocationChange: (String) -> Unit,
     onScanToggle: () -> Unit,
@@ -867,6 +880,8 @@ fun BlueTraceApp(
     onTrustScanToggle: () -> Unit,
     onBaselineScanToggle: () -> Unit,
     onScreenChange: (String) -> Unit,
+    onLocationSelected: (String) -> Unit,
+    onBackToScan: () -> Unit,
     onTrustedEnabledChange: (String, Boolean) -> Unit,
     onClearTrusted: () -> Unit,
     onClearBaseline: () -> Unit,
@@ -876,6 +891,18 @@ fun BlueTraceApp(
     val watchMatches = devices.filter { it.isWatchAlert() }
     val sweepElapsed = rememberSweepElapsed(sessionStart, sweepComplete)
     val sweepOverWindow = sessionStart > 0L && sweepElapsed > SWEEP_WINDOW_MS
+    val liveScanSeconds = rememberLiveScanSeconds(isScanning)
+
+    if (activeScreen == SCREEN_LOCATION_DETAIL && selectedLocationName != null) {
+        val locationDevices = devices.filter { selectedLocationName in it.locations }
+        LocationDetailScreen(
+            locationName = selectedLocationName,
+            location = sweepLocations.firstOrNull { it.name == selectedLocationName },
+            devices = locationDevices,
+            onBack = onBackToScan
+        )
+        return
+    }
 
     if (activeScreen == SCREEN_TRUSTED) {
         Column(modifier = Modifier.fillMaxSize().background(DarkBg)) {
@@ -965,7 +992,7 @@ fun BlueTraceApp(
                 }
 
                 if (sweepLocations.isNotEmpty()) {
-                    item { LocationHistory(sweepLocations) }
+                    item { LocationHistory(sweepLocations, onLocationSelected) }
                 }
 
                 item {
@@ -1032,7 +1059,7 @@ fun BlueTraceApp(
 
         // ── Completed locations ──
         if (sweepLocations.isNotEmpty()) {
-            LocationHistory(sweepLocations)
+            LocationHistory(sweepLocations, onLocationSelected)
             Spacer(modifier = Modifier.height(10.dp))
         }
 
@@ -1083,6 +1110,11 @@ fun BlueTraceApp(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+
+            if (isScanning) {
+                LiveScanningCard(seconds = liveScanSeconds)
+                Spacer(modifier = Modifier.height(8.dp))
+            }
         }
 
         // ── Stats row ──
@@ -1119,15 +1151,14 @@ fun BlueTraceApp(
             )
         }
 
-        // ── Device list ──
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.weight(1f)
-        ) {
-            items(devices, key = { it.mac }) { device ->
-                DeviceCard(device)
-            }
-        }
+        // ── Live summary ──
+        LiveSweepSummary(
+            deviceCount = totalDeviceCount,
+            watchCount = watchMatches.size,
+            locationCount = sweepLocations.size
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
 
         // ── Reset button ──
         if (!sweepComplete) {
@@ -1292,6 +1323,59 @@ fun MovementModeButton(
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+fun rememberLiveScanSeconds(isScanning: Boolean): Long {
+    var seconds by remember { mutableStateOf(0L) }
+    LaunchedEffect(isScanning) {
+        seconds = 0L
+        while (isScanning) {
+            delay(1000L)
+            seconds += 1L
+        }
+    }
+    return seconds
+}
+
+@Composable
+fun LiveScanningCard(seconds: Long) {
+    val pulse = (seconds % 3).toInt()
+    val dots = ".".repeat(pulse + 1)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF06140D), RoundedCornerShape(12.dp))
+            .border(1.dp, Color(0xFF14532D), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .background(GreenColor, CircleShape)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "Scanning$dots",
+                color = GreenColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "Listening for nearby Bluetooth signals",
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        Text(
+            "${seconds}s",
+            color = TextPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
         )
     }
 }
@@ -1534,7 +1618,7 @@ fun AlertBanner(count: Int, overWindow: Boolean) {
 }
 
 @Composable
-fun LocationHistory(locations: List<SweepLocation>) {
+fun LocationHistory(locations: List<SweepLocation>, onLocationSelected: (String) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1544,6 +1628,10 @@ fun LocationHistory(locations: List<SweepLocation>) {
     ) {
         locations.forEachIndexed { index, loc ->
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onLocationSelected(loc.name) }
+                    .padding(vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -1563,6 +1651,102 @@ fun LocationHistory(locations: List<SweepLocation>) {
                 }
                 Text(loc.name, color = TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
                 Text("${loc.deviceCount} devices", color = GreenColor, fontSize = 12.sp)
+                Text(">", color = TextMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun LiveSweepSummary(deviceCount: Int, watchCount: Int, locationCount: Int) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DarkCard, RoundedCornerShape(12.dp))
+            .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Live sweep", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ResultMiniStat("Locations", "$locationCount/$TOTAL_LOCATIONS", Modifier.weight(1f), BlueColor)
+            ResultMiniStat("Devices", deviceCount.toString(), Modifier.weight(1f), GreenColor)
+            ResultMiniStat("Watch", watchCount.toString(), Modifier.weight(1f), if (watchCount > 0) YellowColor else TextMuted)
+        }
+        Text(
+            "Tap a completed location above to review its scan details.",
+            color = TextMuted,
+            fontSize = 12.sp
+        )
+    }
+}
+
+@Composable
+fun LocationDetailScreen(
+    locationName: String,
+    location: SweepLocation?,
+    devices: List<BleDevice>,
+    onBack: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBg)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) {
+                Text("<", color = GreenColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(locationName, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "${devices.size} visible ${resultDeviceWord(devices.size)} from this scan point",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ResultMiniStat("Recorded", (location?.deviceCount ?: devices.size).toString(), Modifier.weight(1f), GreenColor)
+            ResultMiniStat("Alerts", devices.count { it.isAlertMatch() }.toString(), Modifier.weight(1f), RedColor)
+            ResultMiniStat("Watch", devices.count { it.isWatchAlert() }.toString(), Modifier.weight(1f), YellowColor)
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (devices.isEmpty()) {
+                item {
+                    Text(
+                        "No visible unknown devices for this location. Trusted devices may have been ignored.",
+                        color = TextMuted,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(DarkCard, RoundedCornerShape(12.dp))
+                            .padding(14.dp)
+                    )
+                }
+            }
+            items(devices, key = { it.mac }) { device ->
+                DeviceCard(device)
             }
         }
     }
