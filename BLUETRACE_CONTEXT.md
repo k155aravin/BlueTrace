@@ -114,6 +114,10 @@ Built and working as of May 2026:
 - Manual 3-location sweep workflow
 - Watch/Alert logic based on repeated appearances
 - 15-minute sweep timer
+- Movement mode selector: walking, driving, indoor, manual
+- Collapsible sweep controls to keep the main scan screen usable
+- Location detail screen for reviewing one scan location at a time
+- Final results screen after the third scan
 - Trusted Devices screen
 - Scan nearby devices to trust
 - Clear feedback after tapping Trust
@@ -131,7 +135,6 @@ Built and working as of May 2026:
 Not built yet:
 
 - Device detail screen
-- Final results screen polish
 - Evidence export
 - Map view
 - Onboarding flow
@@ -247,6 +250,10 @@ Distance estimation uses RSSI and TX power when available. Treat distance as app
 - After tapping Trust, the user gets visible confirmation.
 - UI caps visible devices to avoid list overload and crashes.
 - Distance calculation was made defensive to avoid invalid values.
+- The location detail experiment is now accepted as the main UI flow.
+- The old stable layout is tagged as `stable-before-location-detail`.
+- Final results needed a scroll fix after the third scan and is now scrollable.
+- Live scan feedback was added so the app does not feel frozen during a scan.
 
 ---
 
@@ -257,25 +264,13 @@ Keep the app simple. Do not add large new systems until the core flow is tested.
 Recommended order:
 
 1. Real-world testing of trusted devices and 3-location sweep.
-2. Final results screen after the third scan.
-3. Device detail screen.
-4. Simple export/share report.
-5. Onboarding.
-6. Map/history later.
+2. Device detail screen.
+3. Simple export/share report.
+4. Onboarding.
+5. Map/history later.
+6. Background scanning later.
 
-### 1. Final Results Screen
-
-After the third scan, show a clear result:
-
-- All clear
-- Watch
-- Alert
-- trusted devices ignored
-- baseline matches ignored
-- locations scanned
-- start new sweep button
-
-### 2. Device Detail Screen
+### 1. Device Detail Screen
 
 Tap a device card to show:
 
@@ -290,7 +285,7 @@ Tap a device card to show:
 - RSSI / distance estimate
 - trust button if appropriate
 
-### 3. Evidence Export
+### 2. Evidence Export
 
 Future export should generate a simple report with:
 
@@ -301,6 +296,18 @@ Future export should generate a simple report with:
 - safety disclaimer
 
 PDF can come later. Text export is enough first.
+
+### 3. Final Results Screen Polish
+
+After the third scan, show a clear result:
+
+- All clear
+- Watch
+- Alert
+- trusted devices ignored
+- baseline matches ignored
+- locations scanned
+- start new sweep button
 
 ---
 

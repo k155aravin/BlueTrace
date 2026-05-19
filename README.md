@@ -1,6 +1,6 @@
 # BlueTrace
 
-BlueTrace is an experimental Android safety tool that helps you notice recurring Bluetooth devices across multiple locations.
+BlueTrace is an experimental Android safety and counter-surveillance tool that helps you notice recurring Bluetooth devices across multiple locations.
 
 The idea is simple: if the same nearby device appears where you are, then appears again after you move, and appears again at a third location, that pattern deserves attention. BlueTrace turns invisible Bluetooth signals into a simple sweep result you can review.
 
@@ -28,7 +28,7 @@ After the third scan, BlueTrace checks which devices appeared repeatedly.
 - Seen twice: watch item.
 - Seen three times: alert pattern.
 
-The app also tracks a 15-minute sweep window because some modern devices rotate Bluetooth identifiers over time. Finishing the sweep quickly makes recurring patterns more meaningful.
+The app also tracks a 15-minute sweep window because some modern devices rotate Bluetooth identifiers over time. Finishing the sweep quickly makes recurring patterns more meaningful. BlueTrace also keeps the workflow simple: scan, move, scan, move, scan, then review the result.
 
 ## Current Features
 
@@ -36,6 +36,10 @@ The app also tracks a 15-minute sweep window because some modern devices rotate 
 - 3-location sweep workflow.
 - Watch and alert logic based on repeated appearances.
 - 15-minute clean sweep timer.
+- Movement mode selector for walking, driving, indoor, or manual sweeps.
+- Collapsible sweep controls so the main scan screen does not feel crowded.
+- Location detail screen for reviewing devices seen at each scan point.
+- Final results screen after the third scan.
 - Trusted Devices screen for your own devices.
 - Quiet-place baseline profile for normal devices around you.
 - Bluetooth-off warning so the app does not silently pretend it is scanning.
@@ -67,15 +71,16 @@ Use it somewhere controlled, like at home, in your car, or around your regular w
 
 BlueTrace is not just a simple Bluetooth list.
 
-The product direction includes:
+It combines a few ideas into one practical workflow:
 
 - Recurring device review across different places.
 - Location-based pattern thinking.
+- A 15-minute sweep window for stronger short-term matching.
 - Bluetooth signal timing research.
 - Confidence scoring.
 - Trusted device filtering.
 - Baseline matching.
-- Future scan history and reports.
+- A clear final result instead of a raw technical device dump.
 
 The long-term goal is a safety tool that regular people can carry quietly, without needing to understand Bluetooth, MAC addresses, or technical signal data.
 
@@ -101,6 +106,14 @@ If you believe you are in immediate danger, leave the area and contact local eme
 BlueTrace is currently a working Android prototype.
 
 It can be installed and tested on an Android phone through Android Studio. The app is being built slowly and carefully, with focus on reliability, simple user experience, and safety-first design.
+
+The current main version includes the newer location-detail sweep flow. The previous stable version is saved in Git as:
+
+```text
+stable-before-location-detail
+```
+
+That checkpoint makes it possible to return to the older layout if needed.
 
 ## Tech Stack
 
@@ -129,8 +142,9 @@ com.k155aravin.bluetrace
 Near-term:
 
 - More real-world testing.
-- Cleaner final result screen after the third scan.
+- Polish final result screen after the third scan.
 - Better explanation for watch vs alert.
+- Device detail screen.
 - Scan history.
 - Simple share/export report.
 
