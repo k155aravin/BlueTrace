@@ -49,6 +49,10 @@ private const val SCREEN_TRUSTED = "trusted"
 private const val MODE_SWEEP = "sweep"
 private const val MODE_TRUST = "trust"
 private const val MODE_BASELINE = "baseline"
+private const val MOVEMENT_WALKING = "Walking"
+private const val MOVEMENT_DRIVING = "Driving"
+private const val MOVEMENT_INSIDE = "Inside"
+private const val MOVEMENT_MANUAL = "Manual"
 
 data class BleDevice(
     val mac: String,
@@ -200,6 +204,7 @@ class MainActivity : ComponentActivity() {
     private val isBaselineScanning = mutableStateOf(false)
     private val statusText = mutableStateOf("Ready - start your sweep")
     private val trustStatusText = mutableStateOf("")
+    private val movementMode = mutableStateOf(MOVEMENT_WALKING)
     private val locationName = mutableStateOf("")
     private val handler = Handler(Looper.getMainLooper())
     private var scanCount = 0
@@ -288,6 +293,7 @@ class MainActivity : ComponentActivity() {
                 isTrustScanning = isTrustScanning.value,
                 isBaselineScanning = isBaselineScanning.value,
                 statusText = statusText.value,
+                movementMode = movementMode.value,
                 locationName = locationName.value,
                 totalDeviceCount = totalDeviceCount.value,
                 currentStep = currentStep.value,
@@ -298,6 +304,7 @@ class MainActivity : ComponentActivity() {
                 trustScanDevices = trustScanDevices,
                 trustStatusText = trustStatusText.value,
                 activeScreen = activeScreen.value,
+                onMovementModeChange = { movementMode.value = it },
                 onLocationChange = { locationName.value = it },
                 onScanToggle = { if (isScanning.value) stopBleScan() else checkAndScan() },
                 onReset = { resetSweep() },
@@ -841,6 +848,7 @@ fun BlueTraceApp(
     isTrustScanning: Boolean,
     isBaselineScanning: Boolean,
     statusText: String,
+    movementMode: String,
     locationName: String,
     totalDeviceCount: Int,
     currentStep: Int,
@@ -851,6 +859,7 @@ fun BlueTraceApp(
     trustScanDevices: List<BleDevice>,
     trustStatusText: String,
     activeScreen: String,
+    onMovementModeChange: (String) -> Unit,
     onLocationChange: (String) -> Unit,
     onScanToggle: () -> Unit,
     onReset: () -> Unit,
@@ -928,11 +937,87 @@ fun BlueTraceApp(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // ── Alert banner (show when sweep done and suspicious found) ──
-        if (sweepComplete && confirmedMatches.isNotEmpty()) {
-            AlertBanner(
-                count = confirmedMatches.size,
-                overWindow = sweepOverWindow
+        if (sweepComplete) {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                item {
+                    FinalResultsCard(
+                        alertCount = confirmedMatches.size,
+                        watchCount = watchMatches.size,
+                        trustedCount = trustedDevices.count { it.enabled },
+                        baselineIgnoredCount = devices.count { it.baselineMatch },
+                        totalReviewed = devices.size,
+                        locationCount = sweepLocations.size,
+                        overWindow = sweepOverWindow,
+                        elapsedMs = sweepElapsed,
+                        onNewSweep = onReset
+                    )
+                }
+
+                item {
+                    Text(
+                        statusText,
+                        color = if (statusText.startsWith("ALERT")) RedColor else TextMuted,
+                        fontSize = 13.sp
+                    )
+                }
+
+                if (sweepLocations.isNotEmpty()) {
+                    item { LocationHistory(sweepLocations) }
+                }
+
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        StatCard("Devices", totalDeviceCount.toString(), Modifier.weight(1f))
+                        StatCard(
+                            "Alerts",
+                            confirmedMatches.size.toString(),
+                            Modifier.weight(1f),
+                            if (confirmedMatches.isNotEmpty()) RedColor else GreenColor
+                        )
+                    }
+                }
+
+                item {
+                    Text(
+                        if (devices.isEmpty()) "No unknown devices to review" else "Review devices",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                items(devices, key = { it.mac }) { device ->
+                    DeviceCard(device)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            BottomTabs(
+                activeScreen = activeScreen,
+                onScreenChange = onScreenChange,
+                trustedCount = trustedDevices.count { it.enabled }
+            )
+            return@Column
+        }
+
+        // ── Final result ──
+        if (sweepComplete) {
+            FinalResultsCard(
+                alertCount = confirmedMatches.size,
+                watchCount = watchMatches.size,
+                trustedCount = trustedDevices.count { it.enabled },
+                baselineIgnoredCount = devices.count { it.baselineMatch },
+                totalReviewed = devices.size,
+                locationCount = sweepLocations.size,
+                overWindow = sweepOverWindow,
+                elapsedMs = sweepElapsed,
+                onNewSweep = onReset
             )
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -953,6 +1038,13 @@ fun BlueTraceApp(
 
         // ── Scan input + button (only if sweep not complete) ──
         if (!sweepComplete) {
+            MovementModeCard(
+                selectedMode = movementMode,
+                onModeChange = onMovementModeChange
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
             OutlinedTextField(
                 value = locationName,
                 onValueChange = onLocationChange,
@@ -1016,6 +1108,17 @@ fun BlueTraceApp(
             )
         }
 
+        if (sweepComplete) {
+            Text(
+                if (devices.isEmpty()) "No unknown devices to review"
+                else "Review devices",
+                color = TextMuted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+        }
+
         // ── Device list ──
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -1027,14 +1130,16 @@ fun BlueTraceApp(
         }
 
         // ── Reset button ──
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(
-            onClick = onReset,
-            modifier = Modifier.fillMaxWidth().height(44.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E1E24)),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Text("New sweep", color = TextMuted, fontSize = 14.sp)
+        if (!sweepComplete) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onReset,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E1E24)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("New sweep", color = TextMuted, fontSize = 14.sp)
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -1095,6 +1200,98 @@ fun TabButton(
             color = if (active) GreenColor else TextMuted,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+fun MovementModeCard(
+    selectedMode: String,
+    onModeChange: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val guidance = when (selectedMode) {
+        MOVEMENT_DRIVING -> "For car routes. BlueTrace will expect bigger distance between scan points later."
+        MOVEMENT_INSIDE -> "For malls, offices, hotels, and airports. Future checks can use steps/motion."
+        MOVEMENT_MANUAL -> "You decide when you moved enough. Good when sensors are unreliable."
+        else -> "For streets, parks, and downtown walking. Future checks can use GPS plus steps."
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DarkCard, RoundedCornerShape(12.dp))
+            .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Sweep style", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(selectedMode, color = GreenColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            TextButton(
+                onClick = { expanded = !expanded },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) {
+                Text(
+                    if (expanded) "Hide ^" else "Change v",
+                    color = GreenColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        if (expanded) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                MovementModeButton(MOVEMENT_WALKING, selectedMode, Modifier.weight(1f), onModeChange)
+                MovementModeButton(MOVEMENT_DRIVING, selectedMode, Modifier.weight(1f), onModeChange)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                MovementModeButton(MOVEMENT_INSIDE, selectedMode, Modifier.weight(1f), onModeChange)
+                MovementModeButton(MOVEMENT_MANUAL, selectedMode, Modifier.weight(1f), onModeChange)
+            }
+
+            Text(guidance, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp)
+        }
+    }
+}
+
+@Composable
+fun MovementModeButton(
+    mode: String,
+    selectedMode: String,
+    modifier: Modifier,
+    onModeChange: (String) -> Unit,
+) {
+    val active = mode == selectedMode
+    Button(
+        onClick = { onModeChange(mode) },
+        modifier = modifier.height(38.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (active) Color(0xFF14532D) else Color(0xFF0D0D0F)
+        ),
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp)
+    ) {
+        Text(
+            mode,
+            color = if (active) GreenColor else TextMuted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -1176,6 +1373,132 @@ fun formatElapsed(elapsedMs: Long): String {
     val seconds = totalSeconds % 60L
     return "${minutes}:${seconds.toString().padStart(2, '0')}"
 }
+
+@Composable
+fun FinalResultsCard(
+    alertCount: Int,
+    watchCount: Int,
+    trustedCount: Int,
+    baselineIgnoredCount: Int,
+    totalReviewed: Int,
+    locationCount: Int,
+    overWindow: Boolean,
+    elapsedMs: Long,
+    onNewSweep: () -> Unit,
+) {
+    val hasAlert = alertCount > 0
+    val hasWatch = !hasAlert && watchCount > 0
+    val accent = when {
+        hasAlert -> RedColor
+        hasWatch -> YellowColor
+        else -> GreenColor
+    }
+    val title = when {
+        hasAlert -> "ALERT"
+        hasWatch -> "WATCH"
+        else -> "ALL CLEAR"
+    }
+    val headline = when {
+        hasAlert -> "$alertCount unknown ${resultDeviceWord(alertCount)} matched all 3 locations"
+        hasWatch -> "$watchCount unknown ${resultDeviceWord(watchCount)} appeared twice"
+        else -> "No unknown device followed the full sweep"
+    }
+    val body = when {
+        hasAlert && overWindow -> "Pattern found, but the sweep passed 15 minutes. Treat this as possible, not clean proof."
+        hasAlert -> "This is the strongest pattern BlueTrace looks for. Review the device list below and stay aware."
+        hasWatch -> "Nothing matched all 3 locations, but one or more devices appeared twice. A third scan result would matter."
+        else -> "Trusted and baseline devices were ignored. Nothing unknown matched all 3 scan points."
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DarkCard, RoundedCornerShape(14.dp))
+            .border(1.dp, accent.copy(alpha = .65f), RoundedCornerShape(14.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = accent, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text(headline, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .background(accent.copy(alpha = .14f), CircleShape)
+                    .border(1.dp, accent.copy(alpha = .55f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    when {
+                        hasAlert -> "!"
+                        hasWatch -> "?"
+                        else -> "✓"
+                    },
+                    color = accent,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Text(body, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp)
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ResultMiniStat("Locations", "$locationCount/$TOTAL_LOCATIONS", Modifier.weight(1f), BlueColor)
+            ResultMiniStat("Time", formatElapsed(elapsedMs), Modifier.weight(1f), if (overWindow) RedColor else GreenColor)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ResultMiniStat("Trusted", trustedCount.toString(), Modifier.weight(1f), GreenColor)
+            ResultMiniStat("Baseline", baselineIgnoredCount.toString(), Modifier.weight(1f), BlueColor)
+            ResultMiniStat("Reviewed", totalReviewed.toString(), Modifier.weight(1f), TextMuted)
+        }
+
+        if (overWindow) {
+            Text(
+                "15 minute window passed. Phone IDs may have rotated during the sweep.",
+                color = YellowColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Button(
+            onClick = onNewSweep,
+            modifier = Modifier.fillMaxWidth().height(44.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E1E24)),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text("Start new sweep", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun ResultMiniStat(label: String, value: String, modifier: Modifier, valueColor: Color) {
+    Column(
+        modifier = modifier
+            .background(Color(0xFF0D0D0F), RoundedCornerShape(10.dp))
+            .border(1.dp, DarkBorder, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(label, color = TextMuted, fontSize = 10.sp)
+        Text(value, color = valueColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+fun resultDeviceWord(count: Int): String = if (count == 1) "device" else "devices"
 
 @Composable
 fun AlertBanner(count: Int, overWindow: Boolean) {
