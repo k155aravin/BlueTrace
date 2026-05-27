@@ -7,6 +7,7 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
@@ -37,6 +38,9 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.pow
 
 private const val MAX_TIMESTAMPS_PER_DEVICE = 80
@@ -48,6 +52,7 @@ private const val SWEEP_WINDOW_MS = 15 * 60 * 1000L
 private const val SCREEN_SCAN = "scan"
 private const val SCREEN_TRUSTED = "trusted"
 private const val SCREEN_LOCATION_DETAIL = "location_detail"
+private const val SCREEN_DEVICE_DETAIL = "device_detail"
 private const val MODE_SWEEP = "sweep"
 private const val MODE_TRUST = "trust"
 private const val MODE_BASELINE = "baseline"
@@ -202,9 +207,13 @@ class MainActivity : ComponentActivity() {
     private val totalDeviceCount = mutableStateOf(0)
     private val activeScreen = mutableStateOf(SCREEN_SCAN)
     private val selectedLocationName = mutableStateOf<String?>(null)
+    private val selectedDeviceMac = mutableStateOf<String?>(null)
+    private val showOnboarding = mutableStateOf(false)
     private val isScanning = mutableStateOf(false)
     private val isTrustScanning = mutableStateOf(false)
     private val isBaselineScanning = mutableStateOf(false)
+    private val baselineScanDeviceCount = mutableStateOf(0)
+    private val baselineScanStartedAt = mutableStateOf(0L)
     private val statusText = mutableStateOf("Ready - start your sweep")
     private val trustStatusText = mutableStateOf("")
     private val movementMode = mutableStateOf(MOVEMENT_WALKING)
@@ -289,12 +298,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         loadTrustedDevices()
         loadBaselineDevices()
+        showOnboarding.value = !getPreferences(Context.MODE_PRIVATE)
+            .getBoolean("onboarding_seen", false)
         setContent {
             BlueTraceApp(
                 devices = visibleDevices,
                 isScanning = isScanning.value,
                 isTrustScanning = isTrustScanning.value,
                 isBaselineScanning = isBaselineScanning.value,
+                baselineScanDeviceCount = baselineScanDeviceCount.value,
+                baselineScanStartedAt = baselineScanStartedAt.value,
                 statusText = statusText.value,
                 movementMode = movementMode.value,
                 locationName = locationName.value,
@@ -308,6 +321,8 @@ class MainActivity : ComponentActivity() {
                 trustStatusText = trustStatusText.value,
                 activeScreen = activeScreen.value,
                 selectedLocationName = selectedLocationName.value,
+                selectedDeviceMac = selectedDeviceMac.value,
+                showOnboarding = showOnboarding.value,
                 onMovementModeChange = { movementMode.value = it },
                 onLocationChange = { locationName.value = it },
                 onScanToggle = { if (isScanning.value) stopBleScan() else checkAndScan() },
@@ -320,15 +335,30 @@ class MainActivity : ComponentActivity() {
                     selectedLocationName.value = it
                     activeScreen.value = SCREEN_LOCATION_DETAIL
                 },
+                onDeviceSelected = {
+                    selectedDeviceMac.value = it.mac
+                    activeScreen.value = SCREEN_DEVICE_DETAIL
+                },
                 onBackToScan = {
                     selectedLocationName.value = null
+                    selectedDeviceMac.value = null
                     activeScreen.value = SCREEN_SCAN
                 },
+                onDismissOnboarding = { dismissOnboarding() },
+                onShareReport = { shareSweepReport() },
                 onTrustedEnabledChange = { mac, enabled -> setTrustedEnabled(mac, enabled) },
                 onClearTrusted = { clearTrustedDevices() },
                 onClearBaseline = { clearBaselineDevices() },
             )
         }
+    }
+
+    private fun dismissOnboarding() {
+        showOnboarding.value = false
+        getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("onboarding_seen", true)
+            .apply()
     }
 
     private fun loadTrustedDevices() {
@@ -606,6 +636,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         synchronized(baselineRawDevices) { baselineRawDevices.clear() }
+        baselineScanDeviceCount.value = 0
+        baselineScanStartedAt.value = System.currentTimeMillis()
+        trustStatusText.value = "Baseline scan running - listening for nearby devices"
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
             .setReportDelay(500L)
@@ -678,6 +711,7 @@ class MainActivity : ComponentActivity() {
             btManager.adapter?.bluetoothLeScanner?.stopScan(baselineScanCallback)
         } catch (_: Exception) {}
         isBaselineScanning.value = false
+        baselineScanStartedAt.value = 0L
         if (saveResults) saveBaselineFromScan()
     }
 
@@ -759,7 +793,7 @@ class MainActivity : ComponentActivity() {
         val txPower = result.txPower.takeIf { it != Int.MIN_VALUE }
         val manufacturer = manufacturerName(result)
 
-        synchronized(baselineRawDevices) {
+        val liveBaselineCount = synchronized(baselineRawDevices) {
             val device = baselineRawDevices.getOrPut(mac) {
                 MutableBleDevice(
                     mac = mac,
@@ -780,7 +814,9 @@ class MainActivity : ComponentActivity() {
             device.locations.add("Baseline")
             device.timestamps.addLast(now)
             while (device.timestamps.size > MAX_TIMESTAMPS_PER_DEVICE) device.timestamps.removeFirst()
+            baselineRawDevices.size
         }
+        handler.post { baselineScanDeviceCount.value = liveBaselineCount }
     }
 
     private fun saveBaselineFromScan() {
@@ -803,6 +839,7 @@ class MainActivity : ComponentActivity() {
         baselineDevices.clear()
         baselineDevices.addAll(baseline)
         saveBaselineDevices()
+        trustStatusText.value = "Baseline saved - ${baseline.size} reference ${if (baseline.size == 1) "device" else "devices"}"
         refreshVisibleDevices()
     }
 
@@ -849,6 +886,83 @@ class MainActivity : ComponentActivity() {
         trustScanDevices.clear()
         trustScanDevices.addAll(snapshot)
     }
+
+    private fun shareSweepReport() {
+        val report = buildSweepReport(
+            devices = visibleDevices,
+            sweepLocations = sweepLocations,
+            trustedCount = trustedDevices.count { it.enabled },
+            baselineIgnoredCount = visibleDevices.count { it.baselineMatch },
+            elapsedMs = if (sessionStart.value == 0L) 0L else System.currentTimeMillis() - sessionStart.value,
+            overWindow = sessionStart.value > 0L &&
+                System.currentTimeMillis() - sessionStart.value > SWEEP_WINDOW_MS
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "BlueTrace sweep report")
+            putExtra(Intent.EXTRA_TEXT, report)
+        }
+        startActivity(Intent.createChooser(intent, "Share BlueTrace report"))
+    }
+}
+
+fun buildSweepReport(
+    devices: List<BleDevice>,
+    sweepLocations: List<SweepLocation>,
+    trustedCount: Int,
+    baselineIgnoredCount: Int,
+    elapsedMs: Long,
+    overWindow: Boolean,
+): String {
+    val alerts = devices.filter { it.isAlertMatch() }
+    val watch = devices.filter { it.isWatchAlert() }
+    val status = when {
+        alerts.isNotEmpty() -> "ALERT"
+        watch.isNotEmpty() -> "WATCH"
+        else -> "ALL CLEAR"
+    }
+    val lines = mutableListOf<String>()
+    lines += "BlueTrace Sweep Report"
+    lines += "Generated: ${formatReportTime(System.currentTimeMillis())}"
+    lines += "Result: $status"
+    lines += "Elapsed: ${formatElapsed(elapsedMs)}${if (overWindow) " (past 15 min window)" else ""}"
+    lines += ""
+    lines += "Scan locations:"
+    if (sweepLocations.isEmpty()) {
+        lines += "- No completed locations recorded"
+    } else {
+        sweepLocations.forEachIndexed { index, location ->
+            lines += "- ${index + 1}. ${location.name}: ${location.deviceCount} devices at ${formatReportTime(location.timestamp)}"
+        }
+    }
+    lines += ""
+    lines += "Summary:"
+    lines += "- Alert devices: ${alerts.size}"
+    lines += "- Watch devices: ${watch.size}"
+    lines += "- Trusted devices ignored: $trustedCount"
+    lines += "- Baseline matches ignored: $baselineIgnoredCount"
+    lines += "- Unknown devices reviewed: ${devices.size}"
+    lines += ""
+    lines += "Devices:"
+    if (alerts.isEmpty() && watch.isEmpty()) {
+        lines += "- No unknown device matched enough scan points to flag."
+    } else {
+        (alerts + watch).distinctBy { it.mac }.forEach { device ->
+            val label = if (device.isAlertMatch()) "ALERT" else "WATCH"
+            lines += "- $label: ${device.name} (${device.mac})"
+            lines += "  Type: ${device.deviceType()}, Manufacturer: ${device.manufacturer}"
+            lines += "  Locations: ${device.locations.sorted().joinToString(", ")}"
+            lines += "  Confidence: ${device.confidenceScore()}%, Signals: ${device.scanCount}"
+            lines += "  Heartbeat: ${device.heartbeatMs()?.let { "${String.format("%.0f", it)} ms" } ?: "not enough samples"}"
+        }
+    }
+    lines += ""
+    lines += "Safety note: BlueTrace is an awareness tool. This report is not proof of identity, threat, distance, stalking, or legal evidence. If you believe you are in immediate danger, leave the area and contact local emergency services."
+    return lines.joinToString("\n")
+}
+
+fun formatReportTime(time: Long): String {
+    return SimpleDateFormat("MMM d, yyyy h:mm a", Locale.US).format(Date(time))
 }
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
@@ -859,6 +973,8 @@ fun BlueTraceApp(
     isScanning: Boolean,
     isTrustScanning: Boolean,
     isBaselineScanning: Boolean,
+    baselineScanDeviceCount: Int,
+    baselineScanStartedAt: Long,
     statusText: String,
     movementMode: String,
     locationName: String,
@@ -872,6 +988,8 @@ fun BlueTraceApp(
     trustStatusText: String,
     activeScreen: String,
     selectedLocationName: String?,
+    selectedDeviceMac: String?,
+    showOnboarding: Boolean,
     onMovementModeChange: (String) -> Unit,
     onLocationChange: (String) -> Unit,
     onScanToggle: () -> Unit,
@@ -881,7 +999,10 @@ fun BlueTraceApp(
     onBaselineScanToggle: () -> Unit,
     onScreenChange: (String) -> Unit,
     onLocationSelected: (String) -> Unit,
+    onDeviceSelected: (BleDevice) -> Unit,
     onBackToScan: () -> Unit,
+    onDismissOnboarding: () -> Unit,
+    onShareReport: () -> Unit,
     onTrustedEnabledChange: (String, Boolean) -> Unit,
     onClearTrusted: () -> Unit,
     onClearBaseline: () -> Unit,
@@ -893,12 +1014,27 @@ fun BlueTraceApp(
     val sweepOverWindow = sessionStart > 0L && sweepElapsed > SWEEP_WINDOW_MS
     val liveScanSeconds = rememberLiveScanSeconds(isScanning)
 
+    if (showOnboarding) {
+        OnboardingDialog(onDismiss = onDismissOnboarding)
+    }
+
+    if (activeScreen == SCREEN_DEVICE_DETAIL && selectedDeviceMac != null) {
+        val selectedDevice = devices.firstOrNull { it.mac == selectedDeviceMac }
+        DeviceDetailScreen(
+            device = selectedDevice,
+            onBack = onBackToScan,
+            onTrustDevice = onTrustDevice
+        )
+        return
+    }
+
     if (activeScreen == SCREEN_LOCATION_DETAIL && selectedLocationName != null) {
         val locationDevices = devices.filter { selectedLocationName in it.locations }
         LocationDetailScreen(
             locationName = selectedLocationName,
             location = sweepLocations.firstOrNull { it.name == selectedLocationName },
             devices = locationDevices,
+            onDeviceSelected = onDeviceSelected,
             onBack = onBackToScan
         )
         return
@@ -913,6 +1049,8 @@ fun BlueTraceApp(
                 trustStatusText = trustStatusText,
                 isTrustScanning = isTrustScanning,
                 isBaselineScanning = isBaselineScanning,
+                baselineScanDeviceCount = baselineScanDeviceCount,
+                baselineScanStartedAt = baselineScanStartedAt,
                 onBack = { onScreenChange(SCREEN_SCAN) },
                 onTrustScanToggle = onTrustScanToggle,
                 onBaselineScanToggle = onBaselineScanToggle,
@@ -979,7 +1117,8 @@ fun BlueTraceApp(
                         locationCount = sweepLocations.size,
                         overWindow = sweepOverWindow,
                         elapsedMs = sweepElapsed,
-                        onNewSweep = onReset
+                        onNewSweep = onReset,
+                        onShareReport = onShareReport
                     )
                 }
 
@@ -1020,7 +1159,7 @@ fun BlueTraceApp(
                 }
 
                 items(devices, key = { it.mac }) { device ->
-                    DeviceCard(device)
+                    DeviceCard(device, onClick = { onDeviceSelected(device) })
                 }
             }
 
@@ -1044,7 +1183,8 @@ fun BlueTraceApp(
                 locationCount = sweepLocations.size,
                 overWindow = sweepOverWindow,
                 elapsedMs = sweepElapsed,
-                onNewSweep = onReset
+                onNewSweep = onReset,
+                onShareReport = onShareReport
             )
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -1069,6 +1209,10 @@ fun BlueTraceApp(
                 selectedMode = movementMode,
                 onModeChange = onMovementModeChange
             )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            PermissionContextCard()
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -1179,6 +1323,224 @@ fun BlueTraceApp(
             onScreenChange = onScreenChange,
             trustedCount = trustedDevices.count { it.enabled }
         )
+    }
+}
+
+@Composable
+fun OnboardingDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkCard,
+        titleContentColor = TextPrimary,
+        textContentColor = TextMuted,
+        title = {
+            Text("Welcome to BlueTrace", fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("BlueTrace checks whether the same unknown Bluetooth device appears across three different scan points.")
+                Text("It is an awareness tool, not proof of identity, distance, stalking, or danger.")
+                Text("Bluetooth and location permissions are needed because Android requires them for nearby BLE scanning. Scan data stays on this phone unless you choose to share a report.")
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14532D)),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("I understand", color = GreenColor, fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+fun PermissionContextCard() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF06111F), RoundedCornerShape(12.dp))
+            .border(1.dp, Color(0xFF1E3A8A), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text("Before you scan", color = BlueColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "Android may ask for Bluetooth and Location access. BlueTrace needs them to read nearby BLE signals during your sweep.",
+            color = TextMuted,
+            fontSize = 12.sp,
+            lineHeight = 17.sp
+        )
+    }
+}
+
+@Composable
+fun DeviceDetailScreen(
+    device: BleDevice?,
+    onBack: () -> Unit,
+    onTrustDevice: (BleDevice) -> Unit,
+) {
+    if (device == null) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(DarkBg)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) {
+                Text("< Back", color = GreenColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("Device no longer visible", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("It may have moved into trusted devices or disappeared after the latest refresh.", color = TextMuted, fontSize = 13.sp)
+        }
+        return
+    }
+
+    val score = device.confidenceScore()
+    val heartbeat = device.heartbeatMs()
+    val distance = device.distanceMeters()
+    val status = when {
+        device.trusted -> "TRUSTED"
+        device.baselineMatch -> "BASELINE"
+        device.isAlertMatch() -> "ALERT"
+        device.isWatchAlert() -> "WATCH"
+        else -> "SEEN"
+    }
+    val accent = when (status) {
+        "ALERT" -> RedColor
+        "WATCH" -> YellowColor
+        "TRUSTED" -> GreenColor
+        "BASELINE" -> BlueColor
+        else -> TextMuted
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBg)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) {
+                    Text("<", color = GreenColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(device.name, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(device.mac, color = TextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+                Text(status, color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkCard, RoundedCornerShape(14.dp))
+                    .border(1.dp, accent.copy(alpha = .6f), RoundedCornerShape(14.dp))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(deviceDetailSummary(device), color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "BlueTrace uses repeated appearances across scan points as the main signal. Confidence is a guide, not proof.",
+                    color = TextMuted,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    ResultMiniStat("Confidence", "$score%", Modifier.weight(1f), accent)
+                    ResultMiniStat("Locations", "${device.locationsMatched}/$TOTAL_LOCATIONS", Modifier.weight(1f), BlueColor)
+                }
+            }
+        }
+
+        item {
+            DetailSection("Signal details") {
+                DetailRow("Type", device.deviceType())
+                DetailRow("Manufacturer", device.manufacturer)
+                DetailRow("Signals heard", device.scanCount.toString())
+                DetailRow("Last RSSI", "${device.rssi} dBm")
+                DetailRow("TX power", device.txPower?.let { "$it dBm" } ?: "Not provided")
+                DetailRow("Heartbeat", heartbeat?.let { "${String.format("%.0f", it)} ms" } ?: "Not enough samples")
+                DetailRow("Approx distance", distance?.let { "${String.format("%.1f", it)} m" } ?: "Unknown")
+            }
+        }
+
+        item {
+            DetailSection("Where it appeared") {
+                if (device.locations.isEmpty()) {
+                    DetailRow("Locations", "No completed location stored")
+                } else {
+                    device.locations.sorted().forEach { DetailRow(it, "Seen") }
+                }
+            }
+        }
+
+        item {
+            DetailSection("Timing") {
+                DetailRow("First seen", formatReportTime(device.firstSeen))
+                DetailRow("Last seen", formatReportTime(device.lastSeen))
+            }
+        }
+
+        if (!device.trusted) {
+            item {
+                Button(
+                    onClick = { onTrustDevice(device) },
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14532D)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Trust this device", color = GreenColor, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DetailSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DarkCard, RoundedCornerShape(12.dp))
+            .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(title, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        content()
+    }
+}
+
+@Composable
+fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = TextMuted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Text(value, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+    }
+}
+
+fun deviceDetailSummary(device: BleDevice): String {
+    return when {
+        device.isAlertMatch() -> "Seen at all 3 scan points. Review calmly and consider a new sweep."
+        device.isWatchAlert() -> "Seen at 2 scan points. A third match would matter."
+        device.baselineMatch -> "Matches your quiet-place baseline and is ignored."
+        device.trusted -> "Saved as trusted and ignored during security sweeps."
+        else -> "Seen during this sweep, but not enough to flag."
     }
 }
 
@@ -1469,6 +1831,7 @@ fun FinalResultsCard(
     overWindow: Boolean,
     elapsedMs: Long,
     onNewSweep: () -> Unit,
+    onShareReport: () -> Unit,
 ) {
     val hasAlert = alertCount > 0
     val hasWatch = !hasAlert && watchCount > 0
@@ -1556,6 +1919,15 @@ fun FinalResultsCard(
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold
             )
+        }
+
+        Button(
+            onClick = onShareReport,
+            modifier = Modifier.fillMaxWidth().height(44.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF082F49)),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text("Share text report", color = BlueColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         }
 
         Button(
@@ -1689,6 +2061,7 @@ fun LocationDetailScreen(
     locationName: String,
     location: SweepLocation?,
     devices: List<BleDevice>,
+    onDeviceSelected: (BleDevice) -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -1746,7 +2119,7 @@ fun LocationDetailScreen(
                 }
             }
             items(devices, key = { it.mac }) { device ->
-                DeviceCard(device)
+                DeviceCard(device, onClick = { onDeviceSelected(device) })
             }
         }
     }
@@ -1765,7 +2138,7 @@ fun StatCard(label: String, value: String, modifier: Modifier, valueColor: Color
 }
 
 @Composable
-fun DeviceCard(device: BleDevice) {
+fun DeviceCard(device: BleDevice, onClick: (() -> Unit)? = null) {
     val score = device.confidenceScore()
     val isConfirmed = device.isConfirmedFollow()
     val isWatch = device.isWatchMatch()
@@ -1782,6 +2155,7 @@ fun DeviceCard(device: BleDevice) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
             .background(bgColor, RoundedCornerShape(12.dp))
             .then(
                 if (device.trusted) Modifier.border(1.dp, Color(0xFF14532D), RoundedCornerShape(12.dp))
@@ -1854,6 +2228,8 @@ fun DeviceCard(device: BleDevice) {
             )
         }
 
+        Spacer(modifier = Modifier.height(6.dp))
+        Text("Tap for details", color = TextMuted, fontSize = 11.sp)
     }
 }
 

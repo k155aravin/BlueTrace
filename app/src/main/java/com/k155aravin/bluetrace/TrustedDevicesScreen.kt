@@ -24,11 +24,14 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,6 +67,7 @@ private val TrustedYellow = Color(0xFFFACC15)
 private val TrustedBlue = Color(0xFF60A5FA)
 private val TrustedText = Color(0xFFE0E0E0)
 private val TrustedMuted = Color(0xFF8A8A92)
+private const val BASELINE_SCAN_SECONDS = 30L
 
 @Composable
 fun TrustedDevicesScreen(
@@ -73,6 +77,8 @@ fun TrustedDevicesScreen(
     trustStatusText: String,
     isTrustScanning: Boolean,
     isBaselineScanning: Boolean,
+    baselineScanDeviceCount: Int,
+    baselineScanStartedAt: Long,
     onBack: () -> Unit,
     onTrustScanToggle: () -> Unit,
     onBaselineScanToggle: () -> Unit,
@@ -127,6 +133,9 @@ fun TrustedDevicesScreen(
             BaselineProfileCard(
                 baselineCount = baselineDevices.size,
                 isBaselineScanning = isBaselineScanning,
+                baselineScanDeviceCount = baselineScanDeviceCount,
+                baselineScanStartedAt = baselineScanStartedAt,
+                statusText = trustStatusText,
                 onBaselineScanToggle = onBaselineScanToggle,
                 onClearBaseline = onClearBaseline
             )
@@ -285,9 +294,16 @@ private fun TrustScanSummaryCard(
 private fun BaselineProfileCard(
     baselineCount: Int,
     isBaselineScanning: Boolean,
+    baselineScanDeviceCount: Int,
+    baselineScanStartedAt: Long,
+    statusText: String,
     onBaselineScanToggle: () -> Unit,
     onClearBaseline: () -> Unit,
 ) {
+    val elapsedSeconds = rememberBaselineElapsedSeconds(baselineScanStartedAt, isBaselineScanning)
+    val pulse = (elapsedSeconds % 3).toInt()
+    val dots = ".".repeat(pulse + 1)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -297,9 +313,17 @@ private fun BaselineProfileCard(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text("Baseline profile", color = TrustedBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        if (isBaselineScanning) {
+            BaselineLiveHeader(
+                seconds = elapsedSeconds,
+                deviceCount = baselineScanDeviceCount,
+                dots = dots
+            )
+        }
         Text("Teach BlueTrace what is normal around you.", color = TrustedText, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         Text(
-            if (baselineCount == 0) "Use this in a quiet place with only your own/team devices nearby."
+            if (isBaselineScanning) "Keep the phone still for this 30 second baseline scan."
+            else if (baselineCount == 0) "Use this in a quiet place with only your own/team devices nearby."
             else "$baselineCount reference device(s) saved.",
             color = TrustedMuted,
             fontSize = 12.sp
@@ -313,8 +337,34 @@ private fun BaselineProfileCard(
             shape = RoundedCornerShape(10.dp)
         ) {
             Text(
-                if (isBaselineScanning) "Stop baseline scan" else "Create quiet-place baseline",
+                if (isBaselineScanning) "Scanning baseline - ${elapsedSeconds}s - $baselineScanDeviceCount heard"
+                else "Create quiet-place baseline",
                 color = if (isBaselineScanning) TrustedYellow else TrustedBlue,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (isBaselineScanning) {
+            BaselineScanningStatusCard(
+                seconds = elapsedSeconds,
+                deviceCount = baselineScanDeviceCount,
+                dots = dots
+            )
+        } else if (statusText.startsWith("Baseline saved", ignoreCase = true)) {
+            Text(
+                statusText,
+                color = TrustedGreen,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        } else if (statusText.contains("Baseline scan failed", ignoreCase = true) ||
+            statusText.contains("Bluetooth", ignoreCase = true)
+        ) {
+            Text(
+                statusText,
+                color = TrustedRed,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
         }
@@ -332,6 +382,156 @@ private fun BaselineProfileCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun BaselineLiveHeader(
+    seconds: Long,
+    deviceCount: Int,
+    dots: String,
+) {
+    val remaining = (BASELINE_SCAN_SECONDS - seconds).coerceAtLeast(0L)
+    val progress = (seconds.toFloat() / BASELINE_SCAN_SECONDS.toFloat()).coerceIn(0f, 1f)
+    val phaseText = when {
+        seconds < 5L -> "Starting Bluetooth baseline$dots"
+        seconds < 15L -> "Listening for nearby devices$dots"
+        seconds < 25L -> "Collecting signal patterns$dots"
+        else -> "Finishing baseline profile$dots"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF082F49), RoundedCornerShape(12.dp))
+            .border(1.dp, TrustedBlue, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .background(TrustedBlue, CircleShape)
+            )
+            Text(
+                "LIVE BASELINE SCAN$dots",
+                color = TrustedBlue,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "${remaining}s left",
+                color = TrustedText,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        BaselineProgressBar(progress)
+        Text(
+            phaseText,
+            color = TrustedText,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "$deviceCount nearby ${deviceWord(deviceCount)} heard so far",
+            color = TrustedText,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "Do not close the app. BlueTrace will save the baseline automatically when the timer reaches zero.",
+            color = TrustedMuted,
+            fontSize = 11.sp,
+            lineHeight = 15.sp
+        )
+    }
+}
+
+@Composable
+private fun BaselineProgressBar(progress: Float) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(8.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color(0xFF06111F))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(progress)
+                .height(8.dp)
+                .background(TrustedBlue)
+        )
+    }
+}
+
+@Composable
+private fun rememberBaselineElapsedSeconds(startedAt: Long, isScanning: Boolean): Long {
+    val seconds = remember { mutableStateOf(0L) }
+    LaunchedEffect(startedAt, isScanning) {
+        seconds.value = 0L
+        while (isScanning && startedAt > 0L) {
+            seconds.value = ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(0L)
+            delay(1000L)
+        }
+    }
+    return seconds.value
+}
+
+@Composable
+private fun BaselineScanningStatusCard(
+    seconds: Long,
+    deviceCount: Int,
+    dots: String,
+) {
+    val remaining = (BASELINE_SCAN_SECONDS - seconds).coerceAtLeast(0L)
+    val tip = when {
+        deviceCount == 0 -> "No devices yet. This can happen in a quiet room."
+        deviceCount < 4 -> "A few signals found. Keep the phone still."
+        else -> "Signals are coming in. BlueTrace is building the baseline."
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF06111F), RoundedCornerShape(12.dp))
+            .border(1.dp, Color(0xFF1E3A8A), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .background(TrustedBlue, CircleShape)
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "Scanning quiet place$dots",
+                color = TrustedBlue,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "$tip $remaining seconds left.",
+                color = TrustedMuted,
+                fontSize = 11.sp,
+                lineHeight = 15.sp
+            )
+        }
+        Text(
+            "${seconds}s",
+            color = TrustedText,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
