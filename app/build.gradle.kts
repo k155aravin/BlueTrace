@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.k155aravin.bluetrace"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.k155aravin.bluetrace"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

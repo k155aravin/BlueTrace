@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -223,6 +224,9 @@ class MainActivity : ComponentActivity() {
     private var currentScanLocation = "Location 1"
     private var lastUiRefreshAt = 0L
     private var pendingScanMode = MODE_SWEEP
+    private var scanRunId = 0
+    private var trustScanRunId = 0
+    private var baselineScanRunId = 0
     private val currentLocationDevices = mutableSetOf<String>()
 
     // 3-location sweep state
@@ -240,7 +244,9 @@ class MainActivity : ComponentActivity() {
                 else -> startBleScan()
             }
         } else {
-            statusText.value = "Permissions denied - enable Bluetooth and Location in Settings"
+            val message = "Permission needed - allow Nearby devices so BlueTrace can scan."
+            statusText.value = message
+            trustStatusText.value = message
         }
     }
 
@@ -517,12 +523,19 @@ class MainActivity : ComponentActivity() {
         statusText.value = "Ready - start your sweep"
     }
 
+    private fun requiredScanPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
     private fun checkAndScan() {
-        val permissions = arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = requiredScanPermissions()
         val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
@@ -533,11 +546,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndTrustScan() {
-        val permissions = arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = requiredScanPermissions()
         val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
@@ -548,11 +557,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndBaselineScan() {
-        val permissions = arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = requiredScanPermissions()
         val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
@@ -571,7 +576,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!adapter.isEnabled) {
-            statusText.value = "Bluetooth is off - turn it on and scan again"
+            statusText.value = "Bluetooth is off - turn it on, then scan again."
             return
         }
         val scanner = adapter.bluetoothLeScanner ?: run {
@@ -590,7 +595,11 @@ class MainActivity : ComponentActivity() {
         scanner.startScan(null, settings, scanCallback)
         isScanning.value = true
         statusText.value = "Scanning at $currentScanLocation..."
-        handler.postDelayed({ stopBleScan() }, SCAN_DURATION_MS)
+        scanRunId += 1
+        val thisRun = scanRunId
+        handler.postDelayed({
+            if (isScanning.value && scanRunId == thisRun) stopBleScan()
+        }, SCAN_DURATION_MS)
     }
 
     @SuppressLint("MissingPermission")
@@ -601,7 +610,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!adapter.isEnabled) {
-            trustStatusText.value = "Bluetooth is off"
+            trustStatusText.value = "Bluetooth is off - turn it on, then scan trusted devices again."
             return
         }
         val scanner = adapter.bluetoothLeScanner ?: run {
@@ -617,7 +626,11 @@ class MainActivity : ComponentActivity() {
             .build()
         scanner.startScan(null, settings, trustScanCallback)
         isTrustScanning.value = true
-        handler.postDelayed({ stopTrustScan() }, 15000L)
+        trustScanRunId += 1
+        val thisRun = trustScanRunId
+        handler.postDelayed({
+            if (isTrustScanning.value && trustScanRunId == thisRun) stopTrustScan()
+        }, 15000L)
     }
 
     @SuppressLint("MissingPermission")
@@ -628,7 +641,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!adapter.isEnabled) {
-            trustStatusText.value = "Bluetooth is off"
+            trustStatusText.value = "Bluetooth is off - turn it on, then create the baseline again."
             return
         }
         val scanner = adapter.bluetoothLeScanner ?: run {
@@ -645,7 +658,13 @@ class MainActivity : ComponentActivity() {
             .build()
         scanner.startScan(null, settings, baselineScanCallback)
         isBaselineScanning.value = true
-        handler.postDelayed({ stopBaselineScan(saveResults = true) }, 30000L)
+        baselineScanRunId += 1
+        val thisRun = baselineScanRunId
+        handler.postDelayed({
+            if (isBaselineScanning.value && baselineScanRunId == thisRun) {
+                stopBaselineScan(saveResults = true)
+            }
+        }, 30000L)
     }
 
     @SuppressLint("MissingPermission")
@@ -678,9 +697,9 @@ class MainActivity : ComponentActivity() {
             statusText.value = if (confirmedMatches > 0 && overWindow)
                 "ALERT - $confirmedMatches match(es), but sweep passed 15 min"
             else if (confirmedMatches > 0)
-                "ALERT - $confirmedMatches device(s) followed all 3 locations"
+                "ALERT - $confirmedMatches unknown device(s) matched all 3 locations"
             else
-                "Sweep complete - no suspicious devices found"
+                "Sweep complete - no alert pattern found"
         } else {
             statusText.value = "Location ${currentStep.value} done - move and scan again"
         }
@@ -1340,7 +1359,8 @@ fun OnboardingDialog(onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("BlueTrace checks whether the same unknown Bluetooth device appears across three different scan points.")
                 Text("It is an awareness tool, not proof of identity, distance, stalking, or danger.")
-                Text("Bluetooth and location permissions are needed because Android requires them for nearby BLE scanning. Scan data stays on this phone unless you choose to share a report.")
+                Text("BlueTrace asks only for the nearby-scan permissions Android needs. On older Android versions, Location may appear because Android ties BLE scanning to that permission.")
+                Text("Scan data stays on this phone unless you choose to share a report.")
             }
         },
         confirmButton = {
@@ -1367,7 +1387,7 @@ fun PermissionContextCard() {
     ) {
         Text("Before you scan", color = BlueColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Text(
-            "Android may ask for Bluetooth and Location access. BlueTrace needs them to read nearby BLE signals during your sweep.",
+            "Android may ask for Nearby devices. On older Android phones it may ask for Location because Android requires it for BLE scanning.",
             color = TextMuted,
             fontSize = 12.sp,
             lineHeight = 17.sp
@@ -1848,7 +1868,7 @@ fun FinalResultsCard(
     val headline = when {
         hasAlert -> "$alertCount unknown ${resultDeviceWord(alertCount)} matched all 3 locations"
         hasWatch -> "$watchCount unknown ${resultDeviceWord(watchCount)} appeared twice"
-        else -> "No unknown device followed the full sweep"
+        else -> "No unknown device matched the full sweep"
     }
     val body = when {
         hasAlert && overWindow -> "Pattern found, but the sweep passed 15 minutes. Treat this as possible, not clean proof."
@@ -2220,7 +2240,7 @@ fun DeviceCard(device: BleDevice, onClick: (() -> Unit)? = null) {
         if (!device.trusted && (isConfirmed || isWatch)) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                if (isConfirmed) "⚠ Alert: seen at all 3 locations - confidence $score%"
+                if (isConfirmed) "Alert: seen at all 3 locations - confidence $score%"
                 else "Watch: seen at 2 locations - keep scanning",
                 color = if (isConfirmed) Color(0xFFFCA5A5) else YellowColor,
                 fontSize = 12.sp,
