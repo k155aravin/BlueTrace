@@ -137,6 +137,15 @@ The app package is:
 com.k155aravin.bluetrace
 ```
 
+## Documentation
+
+- [User Guide](docs/USER_GUIDE.md)
+- [FAQ](docs/FAQ.md)
+- [Privacy Policy](docs/PRIVACY_POLICY.md)
+- [Safety Disclaimer](docs/SAFETY_DISCLAIMER.md)
+- [Support](docs/SUPPORT.md)
+- [License Notice](LICENSE.md)
+
 ## Roadmap
 
 Near-term:
