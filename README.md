@@ -145,6 +145,7 @@ com.k155aravin.bluetrace
 - [FAQ](docs/FAQ.md)
 - [Privacy Policy](docs/PRIVACY_POLICY.md)
 - [Safety Disclaimer](docs/SAFETY_DISCLAIMER.md)
+- [Bluetooth Heartbeat Notes](docs/BLUETOOTH_HEARTBEAT_NOTES.md)
 - [Support](docs/SUPPORT.md)
 - [Google Play Store Prep](docs/PLAY_STORE_PREP.md)
 - [License Notice](LICENSE.md)
