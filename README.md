@@ -2,6 +2,8 @@
 
 BlueTrace is an experimental Android safety and counter-surveillance tool that helps you notice recurring Bluetooth devices across multiple locations.
 
+Software development: Aran Kumar and Nawshad Syed.
+
 The idea is simple: if the same nearby device appears where you are, then appears again after you move, and appears again at a third location, that pattern deserves attention. BlueTrace turns invisible Bluetooth signals into a simple sweep result you can review.
 
 ## Why It Exists

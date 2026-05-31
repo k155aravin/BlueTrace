@@ -1371,6 +1371,7 @@ fun OnboardingDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Software development: Aran Kumar and Nawshad Syed.", color = TextPrimary, fontWeight = FontWeight.Bold)
                 Text("BlueTrace checks whether the same unknown Bluetooth device appears across three different scan points.")
                 Text("It is an awareness tool, not proof of identity, distance, stalking, or danger.")
                 Text("BlueTrace asks only for the nearby-scan permissions Android needs. On older Android versions, Location may appear because Android ties BLE scanning to that permission.")
