@@ -171,8 +171,4 @@ Later:
 
 BlueTrace is part of the AMS Software project family by Aran Multi Services Inc.
 
-Website:
-
-```text
-https://aranmultiservices.com/bluetrace
-```
+The public website will be updated later.

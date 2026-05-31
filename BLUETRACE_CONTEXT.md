@@ -20,7 +20,7 @@ Tagline:
 
 Owner: Aran Kumar / k155aravin / Montreal, QC  
 GitHub: https://github.com/k155aravin/BlueTrace  
-Website: https://aranmultiservices.com  
+Company: Aran Multi Services Inc. / AMS Software  
 Package: `com.k155aravin.bluetrace`  
 Language: Kotlin + Jetpack Compose  
 Min SDK: 26
