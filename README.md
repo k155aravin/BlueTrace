@@ -146,6 +146,7 @@ com.k155aravin.bluetrace
 - [Privacy Policy](docs/PRIVACY_POLICY.md)
 - [Safety Disclaimer](docs/SAFETY_DISCLAIMER.md)
 - [Support](docs/SUPPORT.md)
+- [Google Play Store Prep](docs/PLAY_STORE_PREP.md)
 - [License Notice](LICENSE.md)
 
 ## Roadmap And Future Ideas
