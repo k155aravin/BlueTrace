@@ -148,16 +148,15 @@ com.k155aravin.bluetrace
 - [Support](docs/SUPPORT.md)
 - [License Notice](LICENSE.md)
 
-## Roadmap
+## Roadmap And Future Ideas
 
 Near-term:
 
 - More real-world testing.
-- Polish final result screen after the third scan.
 - Better explanation for watch vs alert.
-- Device detail screen.
 - Scan history.
-- Simple share/export report.
+- Simple share/export report improvements.
+- Store release polish.
 
 Later:
 
@@ -165,7 +164,16 @@ Later:
 - Stronger device fingerprinting.
 - Smarter confidence scoring.
 - Safer evidence-style reports.
+- Trusted contact safety check-in, such as sending a preset SMS or location share when the user chooses to ask for help.
 - Public landing page and controlled release.
+
+These are possible future directions, not promised release features. Safety-related ideas need careful design, permissions review, and clear user control.
+
+Have an idea or feedback?
+
+```text
+support@aranmultiservices.com
+```
 
 ## Brand
 
