@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -61,6 +62,7 @@ private const val MOVEMENT_WALKING = "Walking"
 private const val MOVEMENT_DRIVING = "Driving"
 private const val MOVEMENT_INSIDE = "Inside"
 private const val MOVEMENT_MANUAL = "Manual"
+private const val PRIVACY_POLICY_URL = "https://github.com/k155aravin/BlueTrace/blob/main/docs/PRIVACY_POLICY.md"
 
 data class BleDevice(
     val mac: String,
@@ -351,6 +353,7 @@ class MainActivity : ComponentActivity() {
                     activeScreen.value = SCREEN_SCAN
                 },
                 onDismissOnboarding = { dismissOnboarding() },
+                onPrivacyPolicy = { openPrivacyPolicy() },
                 onShareReport = { shareSweepReport() },
                 onTrustedEnabledChange = { mac, enabled -> setTrustedEnabled(mac, enabled) },
                 onClearTrusted = { clearTrustedDevices() },
@@ -365,6 +368,10 @@ class MainActivity : ComponentActivity() {
             .edit()
             .putBoolean("onboarding_seen", true)
             .apply()
+    }
+
+    private fun openPrivacyPolicy() {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_POLICY_URL)))
     }
 
     private fun loadTrustedDevices() {
@@ -1021,6 +1028,7 @@ fun BlueTraceApp(
     onDeviceSelected: (BleDevice) -> Unit,
     onBackToScan: () -> Unit,
     onDismissOnboarding: () -> Unit,
+    onPrivacyPolicy: () -> Unit,
     onShareReport: () -> Unit,
     onTrustedEnabledChange: (String, Boolean) -> Unit,
     onClearTrusted: () -> Unit,
@@ -1034,7 +1042,10 @@ fun BlueTraceApp(
     val liveScanSeconds = rememberLiveScanSeconds(isScanning)
 
     if (showOnboarding) {
-        OnboardingDialog(onDismiss = onDismissOnboarding)
+        OnboardingDialog(
+            onDismiss = onDismissOnboarding,
+            onPrivacyPolicy = onPrivacyPolicy
+        )
     }
 
     if (activeScreen == SCREEN_DEVICE_DETAIL && selectedDeviceMac != null) {
@@ -1346,7 +1357,10 @@ fun BlueTraceApp(
 }
 
 @Composable
-fun OnboardingDialog(onDismiss: () -> Unit) {
+fun OnboardingDialog(
+    onDismiss: () -> Unit,
+    onPrivacyPolicy: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DarkCard,
@@ -1361,6 +1375,11 @@ fun OnboardingDialog(onDismiss: () -> Unit) {
                 Text("It is an awareness tool, not proof of identity, distance, stalking, or danger.")
                 Text("BlueTrace asks only for the nearby-scan permissions Android needs. On older Android versions, Location may appear because Android ties BLE scanning to that permission.")
                 Text("Scan data stays on this phone unless you choose to share a report.")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onPrivacyPolicy) {
+                Text("Privacy policy", color = BlueColor, fontWeight = FontWeight.Bold)
             }
         },
         confirmButton = {
